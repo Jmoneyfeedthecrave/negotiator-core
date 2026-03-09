@@ -1,0 +1,17 @@
+{
+    "name": "Negotiator-Core",
+    "short_name": "Negotiator",
+    "description": "Autonomous AI Negotiation System",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0a0a0f",
+    "theme_color": "#0a0a0f",
+    "icons": [
+        {
+            "src": "/vite.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        }
+    ]
+}
