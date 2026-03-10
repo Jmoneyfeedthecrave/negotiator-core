@@ -1,0 +1,15 @@
+/* Minimal Phase 1 reset — Phase 3 will replace with full Command Center styles */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: monospace;
+    background: #0a0a0f;
+    color: #e2e8f0;
+    font-size: 14px;
+}
