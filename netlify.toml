@@ -12,3 +12,6 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+[functions."send-scheduled"]
+  schedule = "*/15 * * * *"

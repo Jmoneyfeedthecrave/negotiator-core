@@ -116,14 +116,18 @@ export const handler = async (event) => {
         opening_offer = 120,
     } = body
 
-    // Hard cap — Netlify functions timeout at 26s; 2 Claude calls × 5 turns ≈ 20s max
-    const max_turns = Math.min(Number(rawMaxTurns) || 4, 5)
+    // Hard cap — Netlify functions timeout at 26-30s; 2 Claude calls × 2 turns ≈ 10s max
+    const max_turns = Math.min(Number(rawMaxTurns) || 2, 2)
 
     const persona = getPersona(persona_id)
 
     try {
-        // Load technique library
-        const { data: techniques } = await supabase.from('technique_library').select('*')
+        // Skip DB load to save time — use minimal technique list inline
+        const techniques = [
+            { category: 'anchoring', technique_name: 'Extreme Anchor', description: 'Open with a bold extreme offer to set the range.' },
+            { category: 'reframing', technique_name: 'Value Reframe', description: 'Shift focus from price to total value.' },
+            { category: 'silence', technique_name: 'Strategic Silence', description: 'Use silence after an offer to create pressure.' },
+        ]
 
         // Create session in Supabase
         const { data: session } = await supabase
@@ -157,7 +161,7 @@ export const handler = async (event) => {
             // ── Instance B responds (counterparty persona) ─────────────────────────
             const bSystemPrompt = buildCounterpartyBPrompt(persona, domain, target_value * 0.85)
             const bResponse = await anthropic.messages.create({
-                model: 'claude-haiku-4-5',
+                model: 'claude-sonnet-4-5',
                 max_tokens: 512,
                 system: bSystemPrompt,
                 messages: conversationB,
@@ -184,7 +188,7 @@ export const handler = async (event) => {
             // ── Instance A responds (our negotiator) ───────────────────────────────
             const aSystemPrompt = buildNegotiatorAPrompt(domain, batna_value, target_value, opening_offer, techniques || [], transcript)
             const aResponse = await anthropic.messages.create({
-                model: 'claude-haiku-4-5',
+                model: 'claude-sonnet-4-5',
                 max_tokens: 512,
                 system: aSystemPrompt,
                 messages: conversationA,
