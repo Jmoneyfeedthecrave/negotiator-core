@@ -5,11 +5,11 @@
  * Call periodically or on-demand from the dashboard.
  *
  * FIX (BUG-5): replaced N+1 sequential per-row UPDATE loops with batched
- * Postgres operations — a single WHERE-filtered UPDATE for decay, and a
+ * Postgres operations Â— a single WHERE-filtered UPDATE for decay, and a
  * single IN(...) UPDATE for boost. Eliminates timeout risk on large libraries.
  */
 
-$args[0].Groups[1].Value + $args[0].Groups[2].Value + ", handleOptions" + $args[0].Groups[3].Value
+import { getSupabaseAdmin, getDB, requireAuth, BATCH_SIZE, handleOptions } from './fnUtils.js'
 
 let _db
 function getDB() { return (_db ??= getSupabaseAdmin()) }
@@ -22,7 +22,7 @@ const MAX_CONFIDENCE = 0.99      // ceiling
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' }
-    if (event.httpMethod === 'OPTIONS') return handleOptions()
+    if (event.httpMethod === 'OPTIONS') return handleOptions()
     const authErr = requireAuth(event); if (authErr) return authErr
 
     try {
@@ -42,7 +42,7 @@ export const handler = async (event) => {
         // Fallback: if RPC doesn't exist yet, use a single raw SQL approach
         let decayed = 0
         if (decayErr) {
-            // rpc not yet deployed — fall back to a WHERE-clause batch update
+            // rpc not yet deployed Â— fall back to a WHERE-clause batch update
             console.warn('[pattern-decay] RPC not available, using batched fallback:', decayErr.message)
 
             // Fetch IDs of stale patterns (one query)
@@ -97,7 +97,7 @@ export const handler = async (event) => {
                 .lt('confidence_score', MAX_CONFIDENCE)
 
             if (winPatterns?.length > 0) {
-                // Parallel batch boost — Promise.all on groups of 50 instead of N sequential awaits
+                // Parallel batch boost Â— Promise.all on groups of 50 instead of N sequential awaits
                 const BATCH = BATCH_SIZE
                 for (let i = 0; i < winPatterns.length; i += BATCH) {
                     const batch = winPatterns.slice(i, i + BATCH)

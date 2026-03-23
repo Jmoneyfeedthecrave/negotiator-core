@@ -1,11 +1,11 @@
 /**
  * Netlify Function: voice-session
- * POST /api/voice-session  — create or update a voice session
- * GET  /api/voice-session?id=xxx — fetch a session
+ * POST /api/voice-session  Â— create or update a voice session
+ * GET  /api/voice-session?id=xxx Â— fetch a session
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-$args[0].Groups[1].Value + $args[0].Groups[2].Value + ", handleOptions" + $args[0].Groups[3].Value
+import { getSupabaseAdmin, getDB, requireAuth, serviceError, errResponse, MODEL_HAIKU, handleOptions } from './fnUtils.js'
 
 let _supabase
 function getDB() { return (_supabase ??= getSupabaseAdmin()) }
@@ -51,7 +51,7 @@ async function analyzeCall(session, emailThread) {
 
     // Build emotion summary
     const emotionSummary = (session.emotion_timeline || []).slice(0, 20)
-        .map(e => `t=${Math.round(e.ts_ms / 1000)}s: ${e.speaker} — ${e.top_emotion} (${Math.round(e.score * 100)}%)`)
+        .map(e => `t=${Math.round(e.ts_ms / 1000)}s: ${e.speaker} Â— ${e.top_emotion} (${Math.round(e.score * 100)}%)`)
         .join('\n')
 
     const prompt = `You are a master negotiation coach reviewing a completed voice negotiation conducted by ARCHI.
@@ -68,7 +68,7 @@ VOICE TRANSCRIPT:
 ${transcriptText || 'No transcript available'}
 ${emailContext}
 
-Analyze this negotiation and provide a comprehensive debrief. ${emailThread ? 'Pay special attention to any CONTRADICTIONS between what they said in emails vs. on the call — these are key deception signals.' : ''}
+Analyze this negotiation and provide a comprehensive debrief. ${emailThread ? 'Pay special attention to any CONTRADICTIONS between what they said in emails vs. on the call Â— these are key deception signals.' : ''}
 
 Respond with valid JSON only:
 {
@@ -110,7 +110,7 @@ Respond with valid JSON only:
         const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
         return JSON.parse(match ? match[1].trim() : raw.trim())
     } catch {
-        console.error('[voice-session] analyzeCall JSON parse failed — raw:', raw.slice(0, 300))
+        console.error('[voice-session] analyzeCall JSON parse failed Â— raw:', raw.slice(0, 300))
         return {
             negotiation_score: 50,
             outcome_assessment: 'unknown',
@@ -119,7 +119,7 @@ Respond with valid JSON only:
             techniques_they_used: [],
             techniques_archi_used: [],
             email_contradictions: [],
-            what_worked: 'Analysis unavailable — Claude response was not valid JSON.',
+            what_worked: 'Analysis unavailable Â— Claude response was not valid JSON.',
             what_to_do_next: 'Review the call transcript manually.',
             patterns: [],
         }
@@ -129,10 +129,10 @@ Respond with valid JSON only:
 // -- Main handler --------------------------------------------------------------
 export const handler = async (event) => {
     const method = event.httpMethod
-    if (event.httpMethod === 'OPTIONS') return handleOptions()
+    if (event.httpMethod === 'OPTIONS') return handleOptions()
     const authErr = requireAuth(event); if (authErr) return authErr
 
-    // GET — fetch a session
+    // GET Â— fetch a session
     if (method === 'GET') {
         const id = event.queryStringParameters?.id
         const all = event.queryStringParameters?.all
@@ -196,7 +196,7 @@ export const handler = async (event) => {
         return { statusCode: 200, body: JSON.stringify({ success: true }) }
     }
 
-    // -- ANALYZE call — run debrief -------------------------------------------
+    // -- ANALYZE call Â— run debrief -------------------------------------------
     if (action === 'analyze') {
         const { session_id } = body
         const { data: session } = await getDB()

@@ -2,11 +2,11 @@ import { useState } from 'react'
 import './index.css'
 import EmailNegotiator from './components/EmailNegotiator.jsx'
 import KnowledgeLibrary from './components/KnowledgeLibrary.jsx'
-import VoiceNegotiator from './components/VoiceNegotiator.jsx'
+
 
 const TABS = [
     { id: 'email',   label: '✉️ Email' },
-    { id: 'voice',   label: '🎙️ Voice' },
+
     { id: 'knowledge', label: '📚 Knowledge' },
 ]
 
@@ -91,7 +91,7 @@ export default function App() {
 
             <main style={{ flex: 1, overflow: 'hidden' }}>
                 {activeTab === 'email'     && <EmailNegotiator />}
-                {activeTab === 'voice'     && <VoiceNegotiator />}
+
                 {activeTab === 'knowledge' && <KnowledgeLibrary />}
             </main>
         </div>

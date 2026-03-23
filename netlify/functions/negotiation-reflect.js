@@ -6,7 +6,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-$args[0].Groups[1].Value + $args[0].Groups[2].Value + ", handleOptions" + $args[0].Groups[3].Value
+import { getSupabaseAdmin, getDB, requireAuth, MODEL_HAIKU, handleOptions } from './fnUtils.js'
 
 let _db
 function getDB() { return (_db ??= getSupabaseAdmin()) }
@@ -14,7 +14,7 @@ const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' }
-    if (event.httpMethod === 'OPTIONS') return handleOptions()
+    if (event.httpMethod === 'OPTIONS') return handleOptions()
     const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
@@ -54,7 +54,7 @@ export const handler = async (event) => {
 NEGOTIATION DOMAIN: ${thread?.domain || 'General'}
 COUNTERPARTY: ${thread?.counterparty_email || 'Unknown'}
 SUBJECT: ${thread?.subject || 'Unknown'}
-FINAL OUTCOME: ${outcome.toUpperCase()}${deal_value ? ` — Deal value: $${deal_value}` : ''}
+FINAL OUTCOME: ${outcome.toUpperCase()}${deal_value ? ` Â— Deal value: $${deal_value}` : ''}
 ${notes ? `USER NOTES: ${notes}` : ''}
 
 FULL NEGOTIATION TRANSCRIPT:
@@ -144,7 +144,7 @@ Respond with valid JSON only:
                         .eq('id', matched.id)
                 }
             }
-            console.log(`[reflect] outcome-scored ${allPatternsUsed.size} patterns — outcome=${outcome} change=${change}`)
+            console.log(`[reflect] outcome-scored ${allPatternsUsed.size} patterns Â— outcome=${outcome} change=${change}`)
         }
     } catch (scoreErr) {
         console.error('[reflect] pattern scoring failed (non-blocking):', scoreErr.message)
