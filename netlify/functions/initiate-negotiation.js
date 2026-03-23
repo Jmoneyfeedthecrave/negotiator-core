@@ -8,19 +8,20 @@
  *   2. Run counterparty research (fire-and-forget)
  *   3. Call Claude to draft a strategic opening email
  *   4. Save thread + draft to Supabase (status: pending_approval)
- *   5. Return draft for UI review â€” user approves before it sends
+ *   5. Return draft for UI review — user approves before it sends
  */
 
-import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
 import { NEGOTIATION_PLAYBOOK } from './negotiationPlaybook.js'
+$args[0].Groups[1].Value + $args[0].Groups[2].Value + ", handleOptions" + $args[0].Groups[3].Value
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+let _db
+function getDB() { return (_db ??= getSupabaseAdmin()) }
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 async function fetchLearnedPatterns() {
     try {
-        const { data } = await supabase
+        const { data } = await getDB()
             .from('learned_patterns')
             .select('source_type, domain, situation_type, tactic_used, what_worked, lesson, outcome_type')
             .order('confidence_score', { ascending: false })
@@ -33,7 +34,7 @@ function buildOpeningEmailPrompt(ourPosition, counterpartyName, counterpartyEmai
     const tone = ourPosition.tone || 'professional'
     const pp = learnedPatterns.length > 0
         ? `\n\nLEARNED PATTERNS FROM PAST NEGOTIATIONS:\n${learnedPatterns.slice(0, 10).map(p =>
-            `â€¢ [${p.domain}] ${p.situation_type}: ${p.lesson}`).join('\n')}`
+            `• [${p.domain}] ${p.situation_type}: ${p.lesson}`).join('\n')}`
         : ''
 
     return `You are an elite negotiation strategist about to write the OPENING email of a negotiation on behalf of our client.
@@ -68,14 +69,14 @@ Pick the best opening based on our goals, their likely position, and the domain 
 CRITICAL RULES:
 1. Sound like a HUMAN professional, NOT an AI. No "I hope this email finds you well."
 2. Do NOT reveal our walk-away or constraints
-3. Do NOT be aggressive in a way that poisons the well â€” we want a deal
+3. Do NOT be aggressive in a way that poisons the well — we want a deal
 4. Strategic patience: we don't have to win in email #1
-5. Length: 3â€“5 short paragraphs maximum. Business email, not a legal brief.
+5. Length: 3–5 short paragraphs maximum. Business email, not a legal brief.
 
 Return ONLY valid JSON (no markdown, no preamble):
 {
   "subject_line": "email subject",
-  "opening_email": "the full email body â€” plain text, no HTML",
+  "opening_email": "the full email body — plain text, no HTML",
   "opening_strategy": "1-sentence explanation of the chess move you chose",
   "predicted_response_type": "what the counterparty is most likely to reply with",
   "our_next_move_if": {
@@ -88,6 +89,8 @@ Return ONLY valid JSON (no markdown, no preamble):
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' }
+    if (event.httpMethod === 'OPTIONS') return handleOptions()
+    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try { body = JSON.parse(event.body || '{}') }
@@ -111,7 +114,7 @@ export const handler = async (event) => {
         const learnedPatterns = await fetchLearnedPatterns()
 
         // 1. Create the thread record
-        const { data: thread, error: threadErr } = await supabase
+        const { data: thread, error: threadErr } = await getDB()
             .from('email_threads')
             .insert({
                 subject:            our_position.subject,
@@ -131,14 +134,16 @@ export const handler = async (event) => {
         // 2. Trigger counterparty research (fire-and-forget)
         fetch(`${process.env.URL}/.netlify/functions/research-counterparty`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.ARCHI_API_KEY}`,
+            },
             body: JSON.stringify({ thread_id: threadId, from_email: counterparty_email, from_name: counterparty_name }),
         }).catch(err => console.error('[initiate] research fire-and-forget failed:', err.message))
 
         // 3. Call Claude to draft the opening email
         const prompt = buildOpeningEmailPrompt(our_position, counterparty_name, counterparty_email, threadDomain, learnedPatterns)
         const claudeRes = await anthropic.messages.create({
-            model:      'claude-sonnet-4-5',
+            model:      MODEL_HAIKU,
             max_tokens: 2000,
             messages:   [{ role: 'user', content: prompt }],
         })
@@ -156,13 +161,13 @@ export const handler = async (event) => {
             }
         }
 
-        // 4. Save the draft outbound email (pending_approval â€” not sent yet)
-        const { data: savedEmail } = await supabase
+        // 4. Save the draft outbound email (pending_approval — not sent yet)
+        const { data: savedEmail } = await getDB()
             .from('emails')
             .insert({
                 thread_id:    threadId,
                 direction:    'outbound',
-                from_email:   'jdquist2025@gmail.com',
+                from_email:   process.env.GMAIL_USER,
                 to_email:     counterparty_email,
                 subject:      draft.subject_line || our_position.subject,
                 body:         '',              // no inbound body
@@ -179,7 +184,9 @@ export const handler = async (event) => {
 
         return {
             statusCode: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.ARCHI_API_KEY}`,
+            },
             body: JSON.stringify({
                 success: true,
                 thread_id:  threadId,

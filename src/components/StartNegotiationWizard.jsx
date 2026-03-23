@@ -7,6 +7,7 @@
  */
 
 import { useState } from 'react'
+import { apiFetch } from '../api/apiFetch'
 
 const FONT = "'Inter', -apple-system, BlinkMacSystemFont, sans-serif"
 const TONE_OPTIONS = ['collaborative', 'assertive', 'exploratory', 'firm']
@@ -64,17 +65,14 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
         setError(null)
         setLoading(true)
         try {
-            const res = await fetch('/.netlify/functions/initiate-negotiation', {
+            const json = await apiFetch('/.netlify/functions/initiate-negotiation', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     counterparty_email: cpEmail,
                     counterparty_name:  cpName,
                     our_position:       pos,
                 }),
             })
-            const json = await res.json()
-            if (!res.ok) throw new Error(json.error || 'Failed to draft opening email')
             setDraft(json.draft)
             setThreadId(json.thread_id)
             setEmailId(json.email_id)
@@ -91,9 +89,8 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
     const sendEmail = async () => {
         setSending(true)
         try {
-            const res = await fetch('/.netlify/functions/email-send', {
+            await apiFetch('/.netlify/functions/email-send', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     email_id: emailId,
                     thread_id: threadId,
@@ -102,10 +99,6 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
                     body: editedBody,
                 }),
             })
-            if (!res.ok) {
-                const j = await res.json()
-                throw new Error(j.error || 'Send failed')
-            }
             setSent(true)
             setTimeout(() => {
                 onCreated(threadId)
@@ -154,7 +147,7 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
                 <div style={header}>
                     <div>
                         <div style={{ fontSize: '15px', fontWeight: '700', color: 'rgba(0,0,0,0.82)' }}>
-                            ⚡ Start a Negotiation
+                            Start a Negotiation
                         </div>
                         <div style={{ fontSize: '11px', color: 'rgba(0,0,0,0.40)', marginTop: '2px' }}>
                             Step {step} of 3 — {step === 1 ? 'Counterparty' : step === 2 ? 'Your Position' : 'Review Opening Email'}
@@ -271,7 +264,7 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
                                     border: '1px solid rgba(29,107,243,0.15)',
                                     fontSize: '11px', color: '#1a5cd8',
                                 }}>
-                                    ♟️ <strong>Strategy:</strong> {draft.opening_strategy}
+                                    <strong>Strategy:</strong> {draft.opening_strategy}
                                 </div>
                             )}
                             <div style={field}>
@@ -298,7 +291,7 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
                             </div>
                             {draft.predicted_response_type && (
                                 <div style={{ fontSize: '11px', color: 'rgba(0,0,0,0.40)', marginTop: '-4px', marginBottom: '8px' }}>
-                                    🎯 Predicted reply: {draft.predicted_response_type}
+                                    Predicted reply: {draft.predicted_response_type}
                                 </div>
                             )}
                             {sent && (
@@ -306,7 +299,7 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
                                     textAlign: 'center', padding: '12px',
                                     color: '#0e8a58', fontSize: '14px', fontWeight: '600',
                                 }}>
-                                    ✅ Email sent! Opening your thread…
+                                    Email sent! Opening your thread…
                                 </div>
                             )}
                         </>
@@ -319,7 +312,7 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
                             background: 'rgba(224,52,74,0.08)', border: '1px solid rgba(224,52,74,0.2)',
                             fontSize: '12px', color: '#c0203a',
                         }}>
-                            ⚠️ {error}
+                            {error}
                         </div>
                     )}
 
@@ -352,7 +345,7 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
                                 cursor: loading ? 'not-allowed' : 'pointer',
                                 boxShadow: loading ? 'none' : '0 2px 12px rgba(29,107,243,0.35)',
                             }}>
-                                {loading ? '🤖 Drafting…' : 'Draft Opening Email →'}
+                                {loading ? 'Drafting…' : 'Draft Opening Email →'}
                             </button>
                         )}
 
@@ -365,7 +358,7 @@ export default function StartNegotiationWizard({ onClose, onCreated, supabaseCli
                                 cursor: sending ? 'not-allowed' : 'pointer',
                                 boxShadow: sending ? 'none' : '0 2px 12px rgba(29,107,243,0.35)',
                             }}>
-                                {sending ? '📤 Sending…' : '🚀 Send Opening Email'}
+                                {sending ? 'Sending…' : 'Send Opening Email'}
                             </button>
                         )}
                     </div>

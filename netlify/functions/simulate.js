@@ -2,73 +2,39 @@
  * Netlify Function: simulate
  * POST /api/simulate
  * Runs a full Claude-vs-Claude negotiation session for one persona.
- * Instance A = our negotiator (uses full technique library + world model)
+ * Instance A = our negotiator (uses full learned pattern library)
  * Instance B = counterparty persona (uses persona system prompt)
- *
- * Body: {
- *   domain: string,
- *   persona_id: string | 'random',
- *   max_turns?: number,         // default 10
- *   batna_value?: number,
- *   target_value?: number,      // our utility target
- *   opening_offer?: number,
- * }
- *
- * Returns: {
- *   session_id, persona_id, persona_name,
- *   outcome: 'won' | 'lost' | 'batna_breach' | 'stalemate',
- *   final_value, win_vs_target,
- *   turns_taken, transcript,
- *   tactic_summary: { most_used_tactic, key_moments }
- * }
+ * Post-simulation: auto-reflects and creates new learned patterns.
  */
 
-import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
+import { getSupabaseAdmin, MODEL_HAIKU, PERSONAS, requireAuth } from './fnUtils.js'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+let _db
+function getDB() { return (_db ??= getSupabaseAdmin()) }
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
-// ── Inline PERSONAS (Netlify functions cannot import from src/) ────────────────
-const PERSONAS = [
-    { id: 'anchor_bomber', name: 'Anchor Bomber', system_prompt: `You are a negotiator playing the Anchor Bomber persona. Always open with the most extreme anchor you can justify — far outside any reasonable range. State it with total confidence. Move very slowly, making tiny concessions only when pressed hard. Act offended when the counterparty offers anything near fair value.` },
-    { id: 'nibbler', name: 'Nibbler', system_prompt: `You are a negotiator playing the Nibbler persona. Get close to agreement on main terms, then introduce small additional requests one at a time. Each ask should seem minor. Use phrases like "just one more small thing". Exploit the counterparty's commitment to extract extras.` },
-    { id: 'flincher', name: 'Flincher', system_prompt: `You are a negotiator playing the Flincher persona. React with visible shock and disbelief to every offer. "I have to be honest, that number shocked me." Make the counterparty feel their offer is unreasonable even when fair. Use emotional reactions to pressure concessions before making counteroffers.` },
-    { id: 'good_cop_bad_cop', name: 'Good Cop Bad Cop', system_prompt: `You are a negotiator playing Good Cop Bad Cop alone. Reference a fictional aggressive partner: "My colleague thinks we should walk away, but I personally want to find a deal." Alternate between being demanding and sympathetic to create artificial good-faith pressure.` },
-    { id: 'time_pressurer', name: 'Time Pressurer', system_prompt: `You are a negotiator playing the Time Pressurer persona. Create artificial urgency: fake deadlines, competing offers, expiring board approvals. "I need an answer by end of day." "We have a competing offer we must respond to." Make delay feel like losing the deal.` },
-    { id: 'reluctant_buyer', name: 'Reluctant Buyer', system_prompt: `You are a negotiator playing the Reluctant Buyer persona. Show no enthusiasm. Act as if this deal barely interests you and you have plenty of alternatives. "I suppose that could work if the price were right." Make the counterparty pursue you and offer concessions to win your lukewarm interest.` },
-    { id: 'logroller', name: 'Logroller', system_prompt: `You are a negotiator playing the Logroller persona. Never concede on a single issue in isolation. Always link issues into package deals. "If you move on price, I can move on timeline." Connect all variables together to extract maximum total value.` },
-    { id: 'information_miner', name: 'Information Miner', system_prompt: `You are a negotiator playing the Information Miner persona. Delay making any offers while asking probing questions: "What is driving that number?", "What happens if this falls through?", "How flexible is your timeline?" Map the counterparty's full situation before committing to any position.` },
-    { id: 'walkaway_bluffer', name: 'Walkaway Bluffer', system_prompt: `You are a negotiator playing the Walkaway Bluffer persona. Regularly threaten to end negotiations even though you actually need this deal. "I think we need to step back from this." Sound completely serious. Return to the table only after the counterparty offers a concession.` },
-    { id: 'rational_actor', name: 'Rational Actor', system_prompt: `You are a negotiator playing the Rational Actor persona. Base all positions on objective criteria: market data, industry benchmarks, comparable transactions. Reject emotional arguments. Only respond to logic and evidence. Do not use manipulation tactics.` },
-    { id: 'maniac', name: 'Maniac', system_prompt: `You are a negotiator playing the Maniac persona. Be completely unpredictable. Shift positions dramatically without explanation. Make sudden extreme demands. Occasionally make a large concession then immediately retract it. Create chaos so the counterparty cannot model your behavior.` },
-    { id: 'rock', name: 'Rock', system_prompt: `You are a negotiator playing the Rock persona. State your opening position clearly once, then never deviate from it regardless of arguments or creative solutions offered. Simply repeat: "Our position remains X. We are not able to move from this." Show zero flexibility.` },
-    { id: 'calling_station', name: 'Calling Station', system_prompt: `You are a negotiator playing the Calling Station persona. Be largely passive and agreeable. Accept most terms without resistance. Occasionally raise a mild, vague objection ("I am just not sure about this one element") without being able to explain why.` },
-    { id: 'shark', name: 'Shark', system_prompt: `You are a negotiator playing the Shark persona. You are world-class. Combine aggressive anchoring, strategic mirroring, emotional labeling, and calibrated questions fluidly. Always control the frame. Study concession patterns and exploit any weakness. Stay calm and in control at all times.` },
-    { id: 'tilted_player', name: 'Tilted Player', system_prompt: `You are a negotiator playing the Tilted Player persona. Start reasonable and professional. As pressure increases, gradually become more emotional and erratic. When significantly pressured, either escalate demands irrationally OR make impulsive concessions just to relieve tension.` },
-    { id: 'smooth_liar', name: 'Smooth Liar', system_prompt: `You are a negotiator playing the Smooth Liar persona. Fabricate facts, competing offers, constraints, and your BATNA — and state them with complete conviction. "We already have a competing offer at this price." Deliver all fabrications smoothly and confidently.` },
-    { id: 'rushed_closer', name: 'Rushed Closer', system_prompt: `You are a negotiator playing the Rushed Closer persona. Push continuously to close the deal fast. "I think we are close enough, let us agree now." "Can we shake on this today?" Resist deliberate examination of terms. Get to a handshake as quickly as possible.` },
-]
 
 function getPersona(personaId) {
     if (personaId === 'random') return PERSONAS[Math.floor(Math.random() * PERSONAS.length)]
     return PERSONAS.find(p => p.id === personaId) || PERSONAS[0]
 }
 
-// ── Negotiator A system prompt (our agent) ────────────────────────────────────
+// -- Negotiator A system prompt (our agent) ------------------------------------
 function buildNegotiatorAPrompt(domain, batnaValue, targetValue, openingOffer, techniques, turnHistory) {
-    const techniqueBlock = techniques.slice(0, 8).map(t => `[${t.category.toUpperCase()}] ${t.technique_name}: ${t.description}`).join('\n')
+    const techniqueBlock = techniques.slice(0, 12).map(t => `[${(t.category || 'learned').toUpperCase()}] ${t.technique_name}: ${t.description}`).join('\n')
     return `You are an elite AI negotiator (Instance A) in a ${domain} negotiation simulation.
 
 OBJECTIVE: Reach the best possible deal. Target value: ${targetValue}. BATNA (walk-away): ${batnaValue}. Opening position: ${openingOffer}.
 
-KEY TECHNIQUES:
+LEARNED PATTERNS (apply these first):
 ${techniqueBlock}
 
 RULES:
 - Never accept below BATNA of ${batnaValue}
 - Always make a concrete offer or counteroffer each turn
 - Track the counterparty's patterns and adapt
+- Reference which learned patterns you applied
 
 OUTPUT: Respond with JSON only:
 {
@@ -81,7 +47,7 @@ OUTPUT: Respond with JSON only:
 }`
 }
 
-// ── Counterparty B system prompt (persona) ────────────────────────────────────
+// -- Counterparty B system prompt (persona) ------------------------------------
 function buildCounterpartyBPrompt(persona, domain, targetValue) {
     return `${persona.system_prompt}
 
@@ -103,6 +69,7 @@ OUTPUT: Respond with JSON only:
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) }
+    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try { body = JSON.parse(event.body) } catch { return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON' }) } }
@@ -116,21 +83,37 @@ export const handler = async (event) => {
         opening_offer = 120,
     } = body
 
-    // Hard cap — Netlify functions timeout at 26-30s; 2 Claude calls × 2 turns ≈ 10s max
-    const max_turns = Math.min(Number(rawMaxTurns) || 2, 2)
-
+    const max_turns = Math.min(Number(rawMaxTurns) || 4, 8)
     const persona = getPersona(persona_id)
 
     try {
-        // Skip DB load to save time — use minimal technique list inline
-        const techniques = [
-            { category: 'anchoring', technique_name: 'Extreme Anchor', description: 'Open with a bold extreme offer to set the range.' },
-            { category: 'reframing', technique_name: 'Value Reframe', description: 'Shift focus from price to total value.' },
-            { category: 'silence', technique_name: 'Strategic Silence', description: 'Use silence after an offer to create pressure.' },
-        ]
+        // Pull learned patterns from DB � ARCHI uses its real knowledge
+        let techniques = []
+        try {
+            const { data: learnedPatterns } = await getDB()
+                .from('learned_patterns')
+                .select('id, tactic_used, lesson, situation_type, confidence_score')
+                .order('confidence_score', { ascending: false })
+                .limit(15)
+            if (learnedPatterns && learnedPatterns.length > 0) {
+                techniques = learnedPatterns.map(p => ({
+                    category: 'learned',
+                    technique_name: p.tactic_used,
+                    description: `${p.lesson} (conf: ${p.confidence_score})`,
+                    id: p.id,
+                }))
+            }
+        } catch { /* fallback to defaults */ }
 
-        // Create session in Supabase
-        const { data: session } = await supabase
+        if (techniques.length === 0) {
+            techniques = [
+                { category: 'anchoring', technique_name: 'Extreme Anchor', description: 'Open with a bold extreme offer to set the range.' },
+                { category: 'reframing', technique_name: 'Value Reframe', description: 'Shift focus from price to total value.' },
+                { category: 'silence', technique_name: 'Strategic Silence', description: 'Use silence after an offer to create pressure.' },
+            ]
+        }
+
+        const { data: session } = await getDB()
             .from('sessions')
             .insert({
                 domain,
@@ -140,9 +123,10 @@ export const handler = async (event) => {
             .select().single()
 
         const sessionId = session.id
-        const conversationA = [] // messages array for Instance A
-        const conversationB = [] // messages array for Instance B
+        const conversationA = []
+        const conversationB = []
         const transcript = []
+        const techniquesUsed = []
 
         let currentOfferA = opening_offer
         let currentOfferB = null
@@ -150,18 +134,20 @@ export const handler = async (event) => {
         let outcome = 'stalemate'
         let turnsCompleted = 0
 
-        // Instance A opens
         const openingStatement = `We are opening at ${opening_offer} for this ${domain} deal. We believe this is a fair starting point and look forward to reaching a mutually beneficial agreement.`
         conversationB.push({ role: 'user', content: openingStatement })
         transcript.push({ turn: 0, speaker: 'negotiator_a', content: openingStatement, offer: opening_offer })
 
         for (let turn = 1; turn <= max_turns; turn++) {
             turnsCompleted = turn
+            // First-person perspective: each conversation array is owned by one party.
+            // Self = assistant, counterparty = user. Never push your own response as user
+            // in your own array � that breaks Claude's alternation requirement.
 
-            // ── Instance B responds (counterparty persona) ─────────────────────────
+            // Instance B responds
             const bSystemPrompt = buildCounterpartyBPrompt(persona, domain, target_value * 0.85)
             const bResponse = await anthropic.messages.create({
-                model: 'claude-sonnet-4-5',
+                model: MODEL_HAIKU,
                 max_tokens: 512,
                 system: bSystemPrompt,
                 messages: conversationB,
@@ -182,13 +168,14 @@ export const handler = async (event) => {
             if (bParsed.deal_accepted) { dealValue = currentOfferA; outcome = dealValue >= batna_value ? 'won' : 'batna_breach'; break }
             if (bParsed.walk_away) { outcome = 'stalemate'; break }
 
-            // Add B's response to A's message history
+            // B responded � record that as assistant in B's conversation, then A hears it as user
+            conversationB.push({ role: 'assistant', content: bParsed.response })
             conversationA.push({ role: 'user', content: bParsed.response })
 
-            // ── Instance A responds (our negotiator) ───────────────────────────────
-            const aSystemPrompt = buildNegotiatorAPrompt(domain, batna_value, target_value, opening_offer, techniques || [], transcript)
+            // Instance A responds with learned patterns
+            const aSystemPrompt = buildNegotiatorAPrompt(domain, batna_value, target_value, opening_offer, techniques, transcript)
             const aResponse = await anthropic.messages.create({
-                model: 'claude-sonnet-4-5',
+                model: MODEL_HAIKU,
                 max_tokens: 512,
                 system: aSystemPrompt,
                 messages: conversationA,
@@ -203,7 +190,9 @@ export const handler = async (event) => {
                 aParsed = { technique_used: 'unknown', reasoning: '', response: aResponse.content[0]?.text || '', my_current_offer: currentOfferA, deal_accepted: false, walk_away: false }
             }
 
+            if (aParsed.technique_used) techniquesUsed.push(aParsed.technique_used)
             if (aParsed.my_current_offer) currentOfferA = aParsed.my_current_offer
+            // A responded � record as assistant in A's conversation, then B hears it as user
             conversationA.push({ role: 'assistant', content: aParsed.response })
             conversationB.push({ role: 'user', content: aParsed.response })
             transcript.push({ turn, speaker: 'negotiator_a', technique: aParsed.technique_used, reasoning: aParsed.reasoning, content: aParsed.response, offer: currentOfferA })
@@ -215,10 +204,9 @@ export const handler = async (event) => {
             }
             if (aParsed.walk_away) { outcome = 'stalemate'; break }
 
-            // Check if offers have converged
             if (currentOfferA !== null && currentOfferB !== null) {
                 const gap = Math.abs(currentOfferA - currentOfferB)
-                if (gap <= (target_value * 0.02)) { // within 2% — call it a deal
+                if (gap <= (target_value * 0.02)) {
                     dealValue = (currentOfferA + currentOfferB) / 2
                     outcome = dealValue >= batna_value ? 'won' : 'batna_breach'
                     break
@@ -226,17 +214,59 @@ export const handler = async (event) => {
             }
         }
 
-        // Compute win_vs_target
         const winVsTarget = dealValue !== null && target_value > 0
             ? ((dealValue - batna_value) / (target_value - batna_value)) * 100
             : null
 
-        // Update session with outcome
-        await supabase.from('sessions').update({
-            transcript,
-            outcome,
-            win_vs_target: winVsTarget,
+        await getDB().from('sessions').update({
+            transcript, outcome, win_vs_target: winVsTarget,
         }).eq('id', sessionId)
+
+        // -- POST-SIMULATION REFLECTION (Autonomous Learning) -------------
+        try {
+            const simTranscript = transcript.map(t =>
+                `[Turn ${t.turn}] ${t.speaker === 'negotiator_a' ? 'ARCHI' : persona.name}: ${t.content?.slice(0, 300) || ''}${t.technique ? ` [technique: ${t.technique}]` : ''}`
+            ).join('\n')
+
+            const reflectPrompt = `Analyze this negotiation simulation and extract 2-4 lessons.
+DOMAIN: ${domain} | PERSONA: ${persona.name} | OUTCOME: ${outcome} | DEAL VALUE: ${dealValue || 'no deal'}
+TRANSCRIPT:\n${simTranscript.slice(0, 2000)}
+
+Respond with valid JSON only:
+{"patterns":[{"situation_type":"trigger","tactic_used":"tactic","what_worked":"text","what_failed":"text or null","lesson":"key insight","confidence_score":0.65}]}`
+
+            const reflectRes = await anthropic.messages.create({
+                model: MODEL_HAIKU,
+                max_tokens: 800,
+                messages: [{ role: 'user', content: reflectPrompt }],
+            })
+
+            let simPatterns = []
+            try {
+                const raw = reflectRes.content[0]?.text || ''
+                const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
+                const parsed = JSON.parse(match ? match[1].trim() : raw.trim())
+                simPatterns = parsed.patterns || []
+            } catch { /* ignore */ }
+
+            if (simPatterns.length > 0) {
+                const rows = simPatterns.map(p => ({
+                    source_type: 'simulation',
+                    domain,
+                    situation_type: p.situation_type,
+                    tactic_used: p.tactic_used,
+                    what_worked: p.what_worked,
+                    what_failed: p.what_failed || null,
+                    lesson: p.lesson,
+                    outcome_type: outcome,
+                    confidence_score: p.confidence_score || 0.55,
+                }))
+                await getDB().from('learned_patterns').insert(rows)
+                console.log(`[simulate-reflect] ${rows.length} new patterns from sim vs ${persona.name}`)
+            }
+        } catch (reflectErr) {
+            console.error('[simulate-reflect] non-blocking:', reflectErr.message)
+        }
 
         return {
             statusCode: 200,
@@ -249,8 +279,8 @@ export const handler = async (event) => {
                 final_value: dealValue,
                 win_vs_target: winVsTarget,
                 turns_taken: turnsCompleted,
-                batna_value,
-                target_value,
+                batna_value, target_value,
+                techniques_used: techniquesUsed,
                 transcript,
             }),
         }

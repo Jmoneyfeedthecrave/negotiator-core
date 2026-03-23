@@ -15,3 +15,24 @@
 
 [functions."send-scheduled"]
   schedule = "*/15 * * * *"
+
+[functions."email-inbound"]
+  timeout = 26
+
+[functions."simulate"]
+  timeout = 26
+
+[functions."hume-config"]
+  timeout = 26
+
+[functions."voice-session"]
+  timeout = 26
+
+[functions."negotiate"]
+  timeout = 26
+
+[functions."initiate-negotiation"]
+  timeout = 26
+
+[functions."research-counterparty"]
+  timeout = 26

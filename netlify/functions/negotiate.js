@@ -12,17 +12,17 @@
  * 1. Load world model + config + technique_library from Supabase
  * 2. BATNA hard check (block if breached)
  * 3. Build dynamic system prompt (with technique library + world model + concession flag)
- * 4. Call Claude API — receives structured JSON response
+ * 4. Call Claude API � receives structured JSON response
  * 5. Parse and validate Claude JSON response
  * 6. Update world model in Supabase (offer, beliefs, bluff_tracker, turn_history)
  * 7. Update session transcript
  * 8. Return structured result to frontend
  */
 
-import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
+$args[0].Groups[1].Value + $args[0].Groups[2].Value + ", handleOptions" + $args[0].Groups[3].Value
 
-// ── Inline engine helpers (Netlify functions cannot import from src/) ─────────
+// -- Inline engine helpers (Netlify functions cannot import from src/) ---------
 
 function checkBATNA(currentOffer, batnaValue, batnaDescription = '', perspective = 'seller') {
     const offerValue = typeof currentOffer?.value === 'number' ? currentOffer.value : null
@@ -82,7 +82,7 @@ CURRENT NEGOTIATION STATE:
 - Domain weights: ${JSON.stringify(weights)}
 - Counterparty belief model: ${JSON.stringify(counterparty_beliefs)}
 - Active bluff tracker: ${JSON.stringify(bluff_tracker)}
-- Full turn history: ${JSON.stringify(turn_history)}
+- Recent turn history (last 10): ${JSON.stringify(turn_history.slice(-10))}
 `.trim()
 
     const concessionWarningBlock =
@@ -94,7 +94,7 @@ CURRENT NEGOTIATION STATE:
             : 'MODE: AUTONOMOUS. Your natural_language_response will be delivered directly to the counterparty. Speak in first person as the negotiator.'
 
     const outputFormatBlock = `
-OUTPUT FORMAT — CRITICAL:
+OUTPUT FORMAT � CRITICAL:
 Respond with ONLY valid JSON, no prose before or after:
 
 {
@@ -124,15 +124,15 @@ Respond with ONLY valid JSON, no prose before or after:
 
 ${modeBlock}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+??????????????????????????????????????????????????????
 NEGOTIATION TECHNIQUE LIBRARY:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+??????????????????????????????????????????????????????
 
 ${techniqueBlock}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+??????????????????????????????????????????????????????
 ${worldModelBlock}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+??????????????????????????????????????????????????????
 ${concessionWarningBlock}
 Before responding you MUST internally:
 1. Identify the counterparty technique and underlying interest.
@@ -143,17 +143,15 @@ Before responding you MUST internally:
 6. Verify your move does not breach BATNA or red lines.
 7. Craft your move for maximum expected value.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+??????????????????????????????????????????????????????
 ${outputFormatBlock}
 `
 }
 
-// ── Main handler ──────────────────────────────────────────────────────────────
+// -- Main handler --------------------------------------------------------------
 
-const supabase = createClient(
-    process.env.VITE_SUPABASE_URL,
-    process.env.VITE_SUPABASE_ANON_KEY
-)
+let _db
+function getDB() { return (_db ??= getSupabaseAdmin()) }
 
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
@@ -161,6 +159,8 @@ export const handler = async (event) => {
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) }
     }
+    if (event.httpMethod === 'OPTIONS') return handleOptions()
+    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try {
@@ -179,8 +179,8 @@ export const handler = async (event) => {
     }
 
     try {
-        // ── 1. Load world model ──────────────────────────────────────────────────
-        const { data: worldModel, error: wmError } = await supabase
+        // -- 1. Load world model --------------------------------------------------
+        const { data: worldModel, error: wmError } = await getDB()
             .from('world_model')
             .select('*')
             .eq('session_id', session_id)
@@ -190,8 +190,8 @@ export const handler = async (event) => {
 
         if (wmError) throw new Error(`World model fetch failed: ${wmError.message}`)
 
-        // ── 2. Load session + config ─────────────────────────────────────────────
-        const { data: session, error: sessionError } = await supabase
+        // -- 2. Load session + config ---------------------------------------------
+        const { data: session, error: sessionError } = await getDB()
             .from('sessions')
             .select('*')
             .eq('id', session_id)
@@ -215,7 +215,7 @@ export const handler = async (event) => {
             }
         }
 
-        // ── 3. BATNA hard check ──────────────────────────────────────────────────
+        // -- 3. BATNA hard check --------------------------------------------------
         const perspective = config.variables?.perspective || 'seller'
         const batnaCheck = checkBATNA(
             worldModel.current_offer,
@@ -236,14 +236,14 @@ export const handler = async (event) => {
             }
         }
 
-        // ── 4. Load technique library ────────────────────────────────────────────
-        const { data: techniques, error: techError } = await supabase
+        // -- 4. Load technique library --------------------------------------------
+        const { data: techniques, error: techError } = await getDB()
             .from('technique_library')
             .select('*')
 
         if (techError) throw new Error(`Technique library fetch failed: ${techError.message}`)
 
-        // ── 5. Build system prompt ───────────────────────────────────────────────
+        // -- 5. Build system prompt -----------------------------------------------
         const systemPrompt = buildSystemPrompt({
             worldModel,
             config,
@@ -252,7 +252,7 @@ export const handler = async (event) => {
             mode,
         })
 
-        // ── 6. Build conversation history for Claude ─────────────────────────────
+        // -- 6. Build conversation history for Claude -----------------------------
         const transcript = session.transcript || []
         const messages = []
 
@@ -268,27 +268,27 @@ export const handler = async (event) => {
         // Add current counterparty message
         messages.push({ role: 'user', content: counterparty_message })
 
-        // ── 7. Call Claude API ───────────────────────────────────────────────────
+        // -- 7. Call Claude API ---------------------------------------------------
         const claudeResponse = await anthropic.messages.create({
-            model: 'claude-opus-4-5',
-            max_tokens: 4096,
+            model: MODEL_HAIKU,
+            max_tokens: 3000,
             system: systemPrompt,
             messages,
         })
 
         const rawText = claudeResponse.content[0]?.text || ''
 
-        // ── 8. Parse and validate Claude JSON response ───────────────────────────
+        // -- 8. Parse and validate Claude JSON response ---------------------------
         let parsed
         try {
-            // Claude may wrap JSON in markdown code fences — strip them
+            // Claude may wrap JSON in markdown code fences � strip them
             const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/)
             const jsonStr = jsonMatch ? jsonMatch[1].trim() : rawText.trim()
             parsed = JSON.parse(jsonStr)
         } catch {
             // If parsing fails, return raw text in a safe wrapper
             parsed = {
-                internal_reasoning: 'JSON parse failed — raw response attached.',
+                internal_reasoning: 'JSON parse failed � raw response attached.',
                 technique_detected: 'unknown',
                 technique_detected_reasoning: '',
                 technique_applied: 'unknown',
@@ -303,7 +303,7 @@ export const handler = async (event) => {
             }
         }
 
-        // ── 9. Update world model ────────────────────────────────────────────────
+        // -- 9. Update world model ------------------------------------------------
         const newTurnEntry = {
             turn: (worldModel.turn_history?.length || 0) + 1,
             role: 'negotiator',
@@ -323,21 +323,20 @@ export const handler = async (event) => {
             : worldModel.bluff_tracker
 
         // Compute new concession remaining
+        // Seller concession = offer goes DOWN; buyer concession = offer goes UP
         const offerBefore = worldModel.current_offer?.value
         const offerAfter = parsed.updated_offer?.value
         let newConcessionRemaining = worldModel.concession_remaining
-        if (
-            typeof offerBefore === 'number' &&
-            typeof offerAfter === 'number' &&
-            perspective === 'seller'
-        ) {
-            const concessionMade = offerBefore - offerAfter
+        if (typeof offerBefore === 'number' && typeof offerAfter === 'number') {
+            const concessionMade = perspective === 'seller'
+                ? offerBefore - offerAfter   // seller: lower offer = concession
+                : offerAfter - offerBefore   // buyer:  higher offer = concession
             if (concessionMade > 0) {
                 newConcessionRemaining = Math.max(0, worldModel.concession_remaining - concessionMade)
             }
         }
 
-        const { error: wmUpdateError } = await supabase
+        const { error: wmUpdateError } = await getDB()
             .from('world_model')
             .update({
                 current_offer: parsed.updated_offer || worldModel.current_offer,
@@ -353,7 +352,7 @@ export const handler = async (event) => {
             console.error('[negotiate] World model update failed:', wmUpdateError)
         }
 
-        // ── 10. Update session transcript ────────────────────────────────────────
+        // -- 10. Update session transcript ----------------------------------------
         const updatedTranscript = [
             ...transcript,
             { role: 'counterparty', content: counterparty_message, timestamp: new Date().toISOString() },
@@ -365,12 +364,12 @@ export const handler = async (event) => {
             },
         ]
 
-        await supabase
+        await getDB()
             .from('sessions')
             .update({ transcript: updatedTranscript })
             .eq('id', session_id)
 
-        // ── 11. Return structured result ─────────────────────────────────────────
+        // -- 11. Return structured result -----------------------------------------
         return {
             statusCode: 200,
             headers: { 'Content-Type': 'application/json' },

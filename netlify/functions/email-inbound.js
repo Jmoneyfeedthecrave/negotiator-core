@@ -5,15 +5,17 @@
  * Parses PDF/DOCX attachments, runs Claude negotiation engine, saves draft.
  */
 
-import { createClient } from '@supabase/supabase-js'
+// createClient import removed - use getDB() from fnUtils.js instead
 import Anthropic from '@anthropic-ai/sdk'
 import mammoth from 'mammoth'
 import { NEGOTIATION_PLAYBOOK, TACTIC_DETECTION_GUIDE } from './negotiationPlaybook.js'
+import { getSupabaseAdmin, MODEL_HAIKU, handleOptions, requireAuth } from './fnUtils.js'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+let _db
+function getDB() { return (_db ??= getSupabaseAdmin()) }
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
-// Process attachments — PDFs returned as base64 for Claude's native document API
+// Process attachments � PDFs returned as base64 for Claude's native document API
 // DOCX/TXT extracted as plain text
 async function processAttachments(attachments) {
     const results = []
@@ -26,7 +28,7 @@ async function processAttachments(attachments) {
         const isTxt = ext === 'txt' || ContentType.startsWith('text/')
         try {
             if (isPdf) {
-                // Pass raw base64 directly to Claude — it reads PDFs natively
+                // Pass raw base64 directly to Claude � it reads PDFs natively
                 results.push({ name: Name, type: 'pdf', base64: Content })
             } else if (isDocx) {
                 const buf = Buffer.from(Content, 'base64')
@@ -43,12 +45,12 @@ async function processAttachments(attachments) {
     return results
 }
 
-// Fetch top learned patterns across ALL domains — Claude decides relevance, not a keyword filter
+// Fetch top learned patterns across ALL domains � Claude decides relevance, not a keyword filter
 async function fetchLearnedPatterns() {
     try {
-        const { data } = await supabase
+        const { data } = await getDB()
             .from('learned_patterns')
-            .select('source_type, domain, situation_type, tactic_used, what_worked, what_failed, lesson, outcome_type')
+            .select('id, source_type, domain, situation_type, tactic_used, what_worked, what_failed, lesson, outcome_type, confidence_score')
             .order('confidence_score', { ascending: false })
             .limit(30)
         return data || []
@@ -88,7 +90,7 @@ function computeScheduledSendTime(domain, receivedAt, theirResponseDeltaMs, urge
 }
 
 function buildEmailNegotiatorPrompt(threadHistory, inboundEmail, domain, textAttachments, learnedPatterns, counterpartyIntel, counterpartyProfile, threadState, emailMeta) {
-    // ── Meta-signals block (Gap 7) ─────────────────────────────────────────
+    // -- Meta-signals block (Gap 7) -----------------------------------------
     const metaBlock = emailMeta ? `
 META-SIGNAL INTELLIGENCE:
   Response time delta: ${emailMeta.responseTimeDeltaHrs != null ? `${emailMeta.responseTimeDeltaHrs.toFixed(1)} hours since our last email` : 'First email in thread'}
@@ -99,12 +101,12 @@ META-SIGNAL INTELLIGENCE:
 INTERPRET: Immediate replies = scripted. Very long delays = uncertain. Short dismissive email = power play. Long over-explained email = anxiety or bluff.
 ` : ''
 
-    // ── Counterparty intel block (Gap 9) ───────────────────────────────────
+    // -- Counterparty intel block (Gap 9) -----------------------------------
     const intelBlock = counterpartyIntel && Object.keys(counterpartyIntel).length > 0 ? `
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COUNTERPARTY INTELLIGENCE BRIEF — READ BEFORE ANALYZING EMAIL
+?????????????????????????????????????????????????????????
+COUNTERPARTY INTELLIGENCE BRIEF � READ BEFORE ANALYZING EMAIL
 This is what we know about them BEFORE reading their message.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+?????????????????????????????????????????????????????????
 Company: ${counterpartyIntel.company_name || 'Unknown'} (${counterpartyIntel.domain || ''})
 Company Overview: ${counterpartyIntel.company_summary || 'No data'}
 Financial Health: ${counterpartyIntel.financial_health || 'Unknown'}
@@ -112,15 +114,15 @@ Recent News: ${counterpartyIntel.recent_news || 'None found'}
 Sender: ${counterpartyIntel.person_name || 'Unknown'}
 Person Background: ${counterpartyIntel.person_summary || 'None found'}
 DETECTED LEVERAGE SIGNALS:
-${counterpartyIntel.leverage_signals?.length ? counterpartyIntel.leverage_signals.map(s => `  ⚡ ${s}`).join('\n') : '  None detected'}
+${counterpartyIntel.leverage_signals?.length ? counterpartyIntel.leverage_signals.map(s => `  ? ${s}`).join('\n') : '  None detected'}
 NEGOTIATING IMPLICATION: ${counterpartyIntel.negotiating_implications || 'Standard posture'}
 ` : ''
 
-    // ── Counterparty profile block (Gap 4) ─────────────────────────────────
+    // -- Counterparty profile block (Gap 4) ---------------------------------
     const profileBlock = counterpartyProfile && Object.keys(counterpartyProfile).length > 0 ? `
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ACCUMULATED COUNTERPARTY PROFILE — BUILT FROM ALL PRIOR EXCHANGES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+?????????????????????????????????????????????????????????
+ACCUMULATED COUNTERPARTY PROFILE � BUILT FROM ALL PRIOR EXCHANGES
+?????????????????????????????????????????????????????????
 Communication style: ${counterpartyProfile.communication_style || 'Unknown'}
 Decision authority: ${counterpartyProfile.decision_authority || 'Unknown'}
 Personality type: ${counterpartyProfile.personality_type || 'Unknown'}
@@ -133,14 +135,14 @@ Bluff signals seen: ${counterpartyProfile.bluff_signals_seen?.join(', ') || 'Non
 Their tells: ${counterpartyProfile.tells?.join(', ') || 'None yet'}
 ` : ''
 
-    // ── Thread state block (strategic game plan, concessions, escalation) ─
+    // -- Thread state block (strategic game plan, concessions, escalation) -
     const stateBlock = threadState && Object.keys(threadState).length > 0 ? `
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+?????????????????????????????????????????????????????????
 ACTIVE STRATEGIC STATE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+?????????????????????????????????????????????????????????
 Move number: ${threadState.move_number || 1}
 Escalation level: ${threadState.escalation_level || 1}/5 (1=collaborative, 3=assertive, 5=take-away/final)
-Strategic game plan: ${threadState.strategic_game_plan || 'Not yet established — first email'}
+Strategic game plan: ${threadState.strategic_game_plan || 'Not yet established � first email'}
 Planned next move: ${threadState.planned_next_move || 'Gather intelligence'}
 Concessions WE have made: ${threadState.concessions_we_made?.join('; ') || 'None'}
 Concessions THEY have made: ${threadState.concessions_they_made?.join('; ') || 'None'}
@@ -148,10 +150,10 @@ Dimensions we have NOT moved on: ${threadState.no_move_dimensions?.join(', ') ||
 Thread observations: ${threadState.thread_observations?.slice(-5).join(' | ') || 'None yet'}
 ` : ''
 
-    // ── Thread history block ───────────────────────────────────────────────
+    // -- Thread history block -----------------------------------------------
     const historyBlock = threadHistory.length > 0
-        ? threadHistory.map((e, i) =>
-            `[${i + 1}] ${e.direction === 'inbound' ? 'THEM' : 'US'}: ${e.body}`
+        ? threadHistory.slice(-10).map((e, i) =>
+            `[${i + 1}] ${e.direction === 'inbound' ? 'THEM' : 'US'}: ${(e.body || '').slice(0, 1000)}${(e.body || '').length > 1000 ? '...[truncated]' : ''}`
         ).join('\n\n')
         : 'This is the first message in the thread.'
 
@@ -163,7 +165,7 @@ Thread observations: ${threadState.thread_observations?.slice(-5).join(' | ') ||
 
     const hasContract = textAttachments?.length > 0
 
-    // ── Learned patterns block ─────────────────────────────────────────────
+    // -- Learned patterns block ---------------------------------------------
     let patternsBlock = ''
     if (learnedPatterns && learnedPatterns.length > 0) {
         const own = learnedPatterns.filter(p => p.source_type === 'own_negotiation')
@@ -171,14 +173,14 @@ Thread observations: ${threadState.thread_observations?.slice(-5).join(' | ') ||
         const research = learnedPatterns.filter(p => p.source_type === 'research')
         const fmt = (p) => `  SITUATION: ${p.situation_type}\n  TACTIC: ${p.tactic_used}\n  LESSON: ${p.lesson}${p.what_worked ? `\n  WORKED: ${p.what_worked}` : ''}${p.what_failed ? `\n  FAILED: ${p.what_failed}` : ''}`
         const sections = []
-        if (own.length) sections.push(`🏆 FROM OUR OWN NEGOTIATIONS (highest priority):\n${own.map(fmt).join('\n\n')}`)
-        if (historical.length) sections.push(`📖 HISTORICAL PRECEDENTS:\n${historical.map(fmt).join('\n\n')}`)
-        if (research.length) sections.push(`🔬 RESEARCH FINDINGS:\n${research.map(fmt).join('\n\n')}`)
+        if (own.length) sections.push(`FROM OUR OWN NEGOTIATIONS (highest priority):\n${own.map(fmt).join('\n\n')}`)
+        if (historical.length) sections.push(`HISTORICAL PRECEDENTS:\n${historical.map(fmt).join('\n\n')}`)
+        if (research.length) sections.push(`RESEARCH FINDINGS:\n${research.map(fmt).join('\n\n')}`)
         if (sections.length) {
             patternsBlock = `
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-LEARNED EXPERIENCE — APPLY THESE BEFORE ANY OTHER FRAMEWORK
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+?????????????????????????????????????????????????????????
+LEARNED EXPERIENCE � APPLY THESE BEFORE ANY OTHER FRAMEWORK
+?????????????????????????????????????????????????????????
 ${sections.join('\n\n')}
 `
         }
@@ -189,55 +191,54 @@ ${sections.join('\n\n')}
 ${TACTIC_DETECTION_GUIDE}
 
 ${metaBlock}
-You are now operating as an ELITE AI NEGOTIATOR in a live ${domain} negotiation.
-Your mission: WIN the best possible outcome using every tool in the playbook above.
+You are operating as a professional strategic negotiation advisor in a live ${domain} negotiation.
+Your role: analyze the incoming message and draft the most effective professional response.
 ${textContractBlock}
 
 NEGOTIATION THREAD HISTORY:
 ${historyBlock}
 
-LATEST INCOMING MESSAGE FROM COUNTERPARTY:
+LATEST MESSAGE FROM COUNTERPARTY:
 ${inboundEmail}
 
-MANDATORY ANALYSIS PROTOCOL — Follow in EXACT order:
+ANALYSIS PROTOCOL � Complete in order:
 
-STEP 0 — PSYCHOLOGICAL PROFILE READ (Human Behavior Mastery):
-  A. COGNITIVE BIASES ACTIVE: What biases are driving their decisions right now?
-     (Loss aversion? Sunk cost? Status quo bias? Anchoring? Reactive devaluation?)
-  B. PERSONALITY TYPE: What DISC type signals are present? Any dark triad indicators?
-     (Analytical/Driver/Expressive/Amiable — or Narcissist/Machiavellian?)
-  C. STATUS NEED: What do they need to feel in this interaction?
-     (Dominant? Smart? Respected? The person who got a deal? The person who won?)
-  D. DECEPTION SIGNALS: Over-justification? Pronoun shifts? Hedging on hard limits? Topic abandonment?
-  E. TARGET EMOTIONAL STATE: What state are they in NOW vs. what state do we need them in BEFORE they read our reply?
+STEP 0 � BEHAVIORAL ASSESSMENT (Interest-Based Analysis):
+  A. COGNITIVE PATTERNS: What decision-making patterns are influencing their position?
+     (loss aversion, anchoring effects, status quo bias, commitment consistency?)
+  B. COMMUNICATION STYLE: What DISC profile signals are present?
+     (Analytical/Driver/Expressive/Amiable � this determines how to frame our response)
+  C. RECOGNITION NEEDS: What outcome do they need to feel good about this deal?
+     (Being seen as skilled? Getting a fair deal? Maintaining relationships? Speed?)
+  D. CONSISTENCY SIGNALS: Are there any inconsistencies between their stated position and their behavior?
+     (Over-justification, topic deflection, hedging on constraints they previously stated as firm?)
+  E. TARGET FRAMING: What framing will make our response most compelling to this person specifically?
 
-STEP 1 — TACTIC IDENTIFICATION:
-  Map their message to the tactic detection matrix. What specific moves did they just use?
-  Also read the META-SIGNALS above — response time, length, CC patterns.
+STEP 1 � TACTIC IDENTIFICATION:
+  Map their message to the tactic detection matrix. What specific negotiation moves did they use?
+  Also interpret the META-SIGNALS above � response time, length patterns, phrasing choices.
 
-STEP 2 — INTELLIGENCE ASSESSMENT:
-  What does this message reveal about their BATNA, real interests, pressures, and deadlines?
-  What are they NOT saying? What topic did they avoid or abandon? That is your leverage point.
-  CHESS LENS: Are they reacting to our frame (we have tempo) or are we reacting to theirs? 
-  Is there a zugzwang opportunity — a response where any move they make concedes something?
+STEP 2 � INTEREST ASSESSMENT:
+  What does this message reveal about their underlying interests, constraints, and timeline pressures?
+  What topics did they NOT address? What they avoid often signals where they're most flexible.
+  STRATEGIC LENS: Are we controlling the frame of this negotiation, or are they? What move maintains our position?
 
-STEP 2.5 — OPPORTUNITY IDENTIFICATION:
-  A. ACCUSATION AUDIT: What objections will they have to our next ask? Pre-empt them in the reply.
-  B. LOSS FRAME: How do we frame our proposal as what they LOSE by declining, not just what they gain?
-  C. PIE EXPANSION: Is there anything we can offer that costs us little but is worth a lot to them?
-  D. MINIMUM VIABLE YES: If they won''t move on the main ask, what is the smallest yes to maintain momentum?
-  E. POSITION vs. MATERIAL: Are we being asked to trade a structural right (position) for immediate cash (material)? If so, resist.
+STEP 2.5 � OPPORTUNITY IDENTIFICATION:
+  A. OBJECTION PREVIEW: What concerns will they raise about our next ask? Address them proactively.
+  B. REFRAMING OPPORTUNITY: How do we present our position in terms of their interests, not ours?
+  C. VALUE CREATION: Is there anything we can offer that costs us little but is worth a lot to them?
+  D. MINIMUM VIABLE YES: If they won''t move on the main ask, what is the smallest yes that keeps progress?
+  E. POSITION vs. INTEREST: Are we being asked to trade a structural principle for immediate gain? If so, assess carefully.
 
-STEP 3 — STRATEGIC PLAN:
-  What is our move in the sequence? Are we executing the plan or does new intel require adaptation?
-  Should we escalate pressure (increase escalation level) or hold and gather more intelligence?
-  How does the counterparty profile inform which framework to deploy?
-  ENDGAME CHECK: Does this move build toward the closing position we defined at the start?
+STEP 3 � STRATEGIC PLAN:
+  What is our optimal response in this sequence? Does new information require adjusting our approach?
+  Should we ask clarifying questions (gather more information) or make a specific proposal?
+  How does their communication profile inform which approach to use in our response?
 
-STEP 4 — DRAFT THE REPLY:
-  Write the exact email. Professional, strategic, confident, never desperate.
-  Every word serves a tactical purpose. The tone should be calmer and more certain than their tone.
-  ${hasContract ? 'Reference specific contract clauses where relevant. Flag problematic language.' : ''}
+STEP 4 � DRAFT THE REPLY:
+  Write the professional response. Confident, clear, and appropriately direct for this domain.
+  The tone should project calm certainty regardless of any pressure in their message.
+  ${hasContract ? 'Reference specific contract clauses where relevant. Flag any terms that warrant clarification.' : ''}
 
 Respond ONLY with valid JSON:
 {
@@ -253,14 +254,14 @@ Respond ONLY with valid JSON:
     "length_pattern": "what email length pattern signals",
     "other_signals": "pronoun shifts, CC changes, topic abandonment"
   },
-  "technique_detected": "Specific tactic(s) they used — cite the framework",
+  "technique_detected": "Specific tactic(s) they used � cite the framework",
   "technique_detected_reasoning": "Exactly which signals gave it away",
-  "technique_applied": "Specific counter-tactic we are deploying — cite the framework",
+  "technique_applied": "Specific counter-tactic we are deploying � cite the framework",
   "move": "One-line strategic move label",
   "bluff_probability": 0.0,
   "bluff_reasoning": "Specific signals this is a bluff vs. genuine constraint",
   "internal_reasoning": "Full private strategic analysis",
-  "leverage_assessment": "Their BATNA vs ours — who has more power and why",
+  "leverage_assessment": "Their BATNA vs ours � who has more power and why",
   "chess_position": "Do we have tempo? Is there a zugzwang? Position vs. material trade-off?",
   "next_move_prediction": "What they will likely say/do next and how we should respond",
   "counterparty_profile_update": {
@@ -285,8 +286,10 @@ Respond ONLY with valid JSON:
     "no_move_dimensions": ["dimensions neither side has moved on"],
     "thread_observations": ["one-line observation from this exchange"]
   },
-  "recommended_send_time": "ISO timestamp — when to send for maximum strategic effect",
-  "timing_reasoning": "Why this send time — domain norms, their urgency, cadence matching",
+  "recommended_send_time": "ISO timestamp � when to send for maximum strategic effect",
+  "timing_reasoning": "Why this send time � domain norms, their urgency, cadence matching",
+  "patterns_used": ["ID or name of each learned pattern you actually applied in this response � reference the LEARNED EXPERIENCE block above"],
+  "novel_tactic": "If you used a tactic NOT from any learned pattern, describe it here in one line. null if all tactics came from known patterns.",
   ${hasContract ? '"contract_analysis": [{"clause": "exact clause text", "risk": "high|medium|low", "issue": "why problematic", "redline": "suggested replacement"}],' : ''}
   "drafted_reply": "The exact, polished email text to send"
 }`
@@ -326,6 +329,22 @@ export const handler = async (event) => {
         return { statusCode: 400, body: JSON.stringify({ error: 'from_email is required' }) }
     }
 
+    // -- DEDUP GUARD: Postmark retries on 5xx. Return 200 immediately if we already
+    // processed this exact message ID so retries are no-ops, not duplicate emails.
+    const incomingMessageId = payload?.MessageID
+    if (incomingMessageId) {
+        const { data: existingEmail } = await getDB()
+            .from('emails')
+            .select('id')
+            .eq('message_id', incomingMessageId)
+            .eq('direction', 'inbound')
+            .maybeSingle()
+        if (existingEmail) {
+            console.log('[email-inbound] Duplicate webhook for message_id ' + incomingMessageId + ' - skipping')
+            return { statusCode: 200, body: JSON.stringify({ ok: true, duplicate: true }) }
+        }
+    }
+
     const counterpartyEmail = fromEmail || payload.from_email
     const emailBody = body || payload.body || ''
 
@@ -338,7 +357,7 @@ export const handler = async (event) => {
             if (inReplyTo || referencesHeader) {
                 const msgIds = [inReplyTo, ...referencesHeader.split(/\s+/)].filter(Boolean)
                 for (const msgId of msgIds) {
-                    const { data: match } = await supabase
+                    const { data: match } = await getDB()
                         .from('emails')
                         .select('thread_id')
                         .eq('message_id', msgId)
@@ -350,7 +369,7 @@ export const handler = async (event) => {
             // 2. Fallback: match by counterparty email + subject
             if (!threadId) {
                 const baseSubject = subject.replace(/^(re:|fwd?:)\s*/gi, '').trim()
-                const { data: existing } = await supabase
+                const { data: existing } = await getDB()
                     .from('email_threads')
                     .select('id')
                     .eq('counterparty_email', counterpartyEmail)
@@ -362,13 +381,13 @@ export const handler = async (event) => {
                 if (existing) threadId = existing.id
             }
 
-            // 3. No match — create a new thread
+            // 3. No match � create a new thread
             if (!threadId) {
-                const { data: session } = await supabase
+                const { data: session } = await getDB()
                     .from('sessions')
                     .insert({ domain, transcript: [], config_snapshot: { mode } })
                     .select().single()
-                const { data: thread } = await supabase
+                const { data: thread } = await getDB()
                     .from('email_threads')
                     .insert({ subject, counterparty_email: counterpartyEmail, domain, session_id: session?.id, mode })
                     .select().single()
@@ -376,8 +395,8 @@ export const handler = async (event) => {
             }
         }
 
-        // Load thread record — including all intelligence columns
-        const { data: threadRecord } = await supabase
+        // Load thread record � including all intelligence columns
+        const { data: threadRecord } = await getDB()
             .from('email_threads')
             .select('mode, domain, counterparty_intel, counterparty_profile, thread_state')
             .eq('id', threadId)
@@ -389,9 +408,107 @@ export const handler = async (event) => {
         const threadState = threadRecord?.thread_state || {}
         const isFirstEmail = Object.keys(counterpartyIntel).length === 0
 
+        // -- CROSS-NEGOTIATION MEMORY + VOICE CONTEXT � Parallel fetch ------
+        let priorHistoryBlock = ''
+        let voiceContextBlock = ''
+
+        const [priorThreadsResult, voiceSessionsResult] = await Promise.all([
+            counterpartyEmail
+                ? getDB()
+                    .from('email_threads')
+                    .select('id, subject, domain, counterparty_profile, counterparty_intel, thread_state, created_at')
+                    .eq('counterparty_email', counterpartyEmail)
+                    .neq('id', threadId)
+                    .order('created_at', { ascending: false })
+                    .limit(5)
+                : Promise.resolve({ data: null }),
+            getDB()
+                .from('voice_sessions')
+                .select('title, counterparty_name, duration_ms, analysis, emotion_timeline, created_at')
+                .eq('thread_id', threadId)
+                .eq('status', 'analyzed')
+                .order('created_at', { ascending: false })
+                .limit(3),
+        ])
+
+        // Process cross-negotiation memory
+        if (priorThreadsResult.data && priorThreadsResult.data.length > 0) {
+            const priorThreads = priorThreadsResult.data
+            try {
+                const priorInsights = priorThreads.map(pt => {
+                    const profile = pt.counterparty_profile || {}
+                    const state = pt.thread_state || {}
+                    return `  PRIOR THREAD: "${pt.subject}" (${pt.domain || 'General'})
+    Style: ${profile.communication_style || 'Unknown'}
+    Personality: ${profile.personality_type || 'Unknown'}
+    Ego: ${profile.ego_sensitivity || 'Unknown'}
+    Authority: ${profile.decision_authority || 'Unknown'}
+    Pressure points: ${profile.detected_pressure_points?.join(', ') || 'None'}
+    Tells: ${profile.tells?.join(', ') || 'None'}
+    Bluff signals: ${profile.bluff_signals_seen?.join(', ') || 'None'}
+    Game plan used: ${state.strategic_game_plan || 'Unknown'}`
+                }).join('\n\n')
+
+                priorHistoryBlock = `
+?????????????????????????????????????????????????????????
+CROSS-NEGOTIATION MEMORY � YOU HAVE DEALT WITH THIS PERSON BEFORE
+Use this intelligence to anticipate their moves. People are creatures of habit.
+?????????????????????????????????????????????????????????
+${priorInsights}
+`
+                if (Object.keys(counterpartyProfile).length === 0 && priorThreads[0].counterparty_profile) {
+                    const priorProfile = priorThreads[0].counterparty_profile
+                    getDB().from('email_threads')
+                        .update({ counterparty_profile: priorProfile })
+                        .eq('id', threadId)
+                        .then(() => console.log('[cross-memory] Merged prior profile into thread', threadId))
+                        .catch(err => console.error('[cross-memory] merge failed:', err.message))
+                }
+            } catch (memErr) {
+                console.error('[cross-memory] failed:', memErr.message)
+            }
+        }
+
+        // Process voice context from parallel fetch
+        if (voiceSessionsResult.data && voiceSessionsResult.data.length > 0) {
+            try {
+                const voiceSessions = voiceSessionsResult.data
+                const callSummaries = voiceSessions.map(vs => {
+                    const a = vs.analysis || {}
+                    const durationMin = vs.duration_ms ? `${Math.round(vs.duration_ms / 60000)}m` : 'unknown duration'
+                    const callDate = new Date(vs.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                    const emotionHighlights = (vs.emotion_timeline || [])
+                        .filter(e => e.score > 0.6).slice(0, 4)
+                        .map(e => `${e.speaker} showed ${e.top_emotion} (${Math.round(e.score * 100)}%)`)
+                        .join('; ')
+                    const contradictions = (a.email_contradictions || [])
+                        .map(c => `� They said "${c.they_said_on_call}" on call but "${c.they_said_in_email}" in email (bluff probability ${Math.round((c.bluff_probability || 0) * 100)}%)`)
+                        .join('\n')
+                    return `CALL ON ${callDate} (${durationMin}) � Score: ${a.negotiation_score || '?'}/100 � Outcome: ${a.outcome_assessment || 'unknown'}
+  Techniques THEY used: ${(a.techniques_they_used || []).join(', ') || 'None detected'}
+  Techniques ARCHI used: ${(a.techniques_archi_used || []).join(', ') || 'unknown'}
+  Emotion signals: ${emotionHighlights || 'None noted'}
+  What worked: ${a.what_worked || 'N/A'}
+  Recommended next move: ${a.what_to_do_next || 'N/A'}${
+    contradictions ? `\n  ?? CONTRADICTIONS BETWEEN CALL AND EMAIL:\n${contradictions}` : ''
+  }`
+                }).join('\n\n')
+                voiceContextBlock = `
+????????????????????????????????????????????????????????
+VOICE CALL INTELLIGENCE � CRITICAL: READ BEFORE DRAFTING
+This counterparty has spoken with ARCHI by phone. Use this intelligence.
+????????????????????????????????????????????????????????
+${callSummaries}
+`
+                console.log(`[voice-context] Injecting ${voiceSessions.length} call(s) into thread ${threadId} prompt`)
+            } catch (voiceErr) {
+                console.error('[voice-context] failed (non-blocking):', voiceErr.message)
+            }
+        }
+
         // Load thread history + all learned patterns in parallel
         const [{ data: threadEmails }, learnedPatterns] = await Promise.all([
-            supabase.from('emails')
+            getDB().from('emails')
                 .select('direction, body, claude_analysis, created_at')
                 .eq('thread_id', threadId)
                 .order('created_at', { ascending: true }),
@@ -402,15 +519,16 @@ export const handler = async (event) => {
         if (isFirstEmail && counterpartyEmail) {
             fetch(`${process.env.URL}/.netlify/functions/research-counterparty`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.ARCHI_API_KEY}`,
+            },
                 body: JSON.stringify({ thread_id: threadId, from_email: counterpartyEmail, from_name: '' }),
             }).catch(err => console.error('[research-counterparty] fire-and-forget failed:', err.message))
 
-            // Auto-draft our position brief from the first inbound email
-            // Claude reads the email and proposes what OUR goals probably should be
-            // Saved as position_confirmed=false so the UI shows a "confirm your position" card
-            try {
-                const briefPrompt = `You are an expert negotiator reading an inbound email to figure out what the RECIPIENT (our client, not the sender) probably wants to achieve.
+            // Auto-draft our position brief � fire-and-forget (non-blocking, adds ~1.5s if awaited)
+            ;(async () => {
+                try {
+                    const briefPrompt = `You are an expert negotiator reading an inbound email to figure out what the RECIPIENT (our client, not the sender) probably wants to achieve.
 
 EMAIL SUBJECT: ${subject || '(no subject)'}
 EMAIL BODY:
@@ -422,7 +540,7 @@ Based on this email, infer:
 3. What would a REASONABLE goal be for the RECIPIENT (our client)?
 4. Suggest a realistic ideal outcome, walk-away point, and any obvious constraints.
 
-Be specific — use numbers and dates if you can infer them. If the email is vague, make reasonable assumptions.
+Be specific � use numbers and dates if you can infer them. If the email is vague, make reasonable assumptions.
 
 Return ONLY valid JSON:
 {
@@ -434,35 +552,35 @@ Return ONLY valid JSON:
   "batna": "likely BATNA if this deal falls through",
   "concessions_available": "concessions we might offer to move things forward",
   "constraints": "any obvious constraints on our side",
-  "tone": "recommended tone — collaborative | assertive | exploratory | firm"
+  "tone": "recommended tone � collaborative | assertive | exploratory | firm"
 }`
 
-                const briefRes = await anthropic.messages.create({
-                    model: 'claude-haiku-4-5',
-                    max_tokens: 800,
-                    messages: [{ role: 'user', content: briefPrompt }],
-                })
+                    const briefRes = await anthropic.messages.create({
+                        model: MODEL_HAIKU,
+                        max_tokens: 800,
+                        messages: [{ role: 'user', content: briefPrompt }],
+                    })
 
-                let ourPosition = null
-                try {
-                    const raw = briefRes.content[0]?.text || ''
-                    const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
-                    ourPosition = JSON.parse(match ? match[1].trim() : raw.trim())
-                } catch {
-                    console.error('[brief-draft] JSON parse failed')
-                }
+                    let ourPosition = null
+                    try {
+                        const raw = briefRes.content[0]?.text || ''
+                        const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
+                        ourPosition = JSON.parse(match ? match[1].trim() : raw.trim())
+                    } catch {
+                        console.error('[brief-draft] JSON parse failed')
+                    }
 
-                if (ourPosition) {
-                    await supabase.from('email_threads')
-                        .update({ our_position: ourPosition, position_confirmed: false })
-                        .eq('id', threadId)
-                    console.log('[brief-draft] position brief saved for thread', threadId)
+                    if (ourPosition) {
+                        await getDB().from('email_threads')
+                            .update({ our_position: ourPosition, position_confirmed: false })
+                            .eq('id', threadId)
+                        console.log('[brief-draft] position brief saved for thread', threadId)
+                    }
+                } catch (briefErr) {
+                    console.error('[brief-draft] failed:', briefErr.message)
                 }
-            } catch (briefErr) {
-                console.error('[brief-draft] failed:', briefErr.message)
-            }
+            })()
         }
-
 
         // Compute email meta-signals for the prompt
         const lastOutbound = (threadEmails || []).filter(e => e.direction === 'outbound').pop()
@@ -476,7 +594,7 @@ Return ONLY valid JSON:
         const wordCountTrend = avgPrev === 0 ? 'baseline' : wordCount > avgPrev * 1.4 ? 'longer than usual (anxiety/over-justification?)' : wordCount < avgPrev * 0.6 ? 'shorter than usual (power play?)' : 'normal'
         const iWeCount = (emailBodyClean.match(/\bI\b/g) || []).length
         const weCount = (emailBodyClean.match(/\bwe\b/gi) || []).length
-        const pronounPattern = iWeCount > weCount * 2 ? 'Heavy I — speaking personally, not for group' : weCount > iWeCount * 2 ? 'Heavy we — speaking for group or hiding behind it' : 'Mixed — standard'
+        const pronounPattern = iWeCount > weCount * 2 ? 'Heavy I � speaking personally, not for group' : weCount > iWeCount * 2 ? 'Heavy we � speaking for group or hiding behind it' : 'Mixed � standard'
         const sentDay = new Date().toLocaleDateString('en-US', { weekday: 'long', hour: '2-digit', minute: '2-digit' })
         const emailMeta = {
             responseTimeDeltaHrs: responseTimeDeltaMs != null ? responseTimeDeltaMs / 3600000 : null,
@@ -488,22 +606,29 @@ Return ONLY valid JSON:
         }
 
         // Compute scheduled send timing
-        const urgencyScore = analysis.bluff_probability || 0.5  // will be recalculated after Claude, but pre-compute for timing
+        const urgencyScore = 0.5  // pre-Claude default; actual score computed after analysis at line 590
         const { scheduledSendAt } = computeScheduledSendTime(threadDomain, new Date().toISOString(), responseTimeDeltaMs, urgencyScore)
 
-        // Process attachments — PDFs go natively to Claude, DOCX/TXT extracted as text
+        // Process attachments � PDFs go natively to Claude, DOCX/TXT extracted as text
         const allAttachments = await processAttachments(attachments)
         const pdfAttachments = allAttachments.filter(a => a.type === 'pdf')
         const textAttachments = allAttachments.filter(a => a.type === 'text')
         const hasAttachments = allAttachments.length > 0
 
         // Run Claude negotiation analysis + draft reply
-        const prompt = buildEmailNegotiatorPrompt(
+        let prompt = buildEmailNegotiatorPrompt(
             threadEmails || [], emailBodyClean, threadDomain, textAttachments, learnedPatterns,
             counterpartyIntel, counterpartyProfile, threadState, emailMeta
         )
+        // Inject cross-platform context: prior negotiation memory + voice calls
+        if (priorHistoryBlock) {
+            prompt = priorHistoryBlock + '\n' + prompt
+        }
+        if (voiceContextBlock) {
+            prompt = voiceContextBlock + '\n' + prompt
+        }
 
-        // Build message content — PDFs passed as native Claude document blocks
+        // Build message content � PDFs passed as native Claude document blocks
         const userContent = [
             // Native PDF documents (Claude reads these directly)
             ...pdfAttachments.map(pdf => ({
@@ -517,7 +642,7 @@ Return ONLY valid JSON:
         ]
 
         const claudeRes = await anthropic.messages.create({
-            model: 'claude-sonnet-4-5',
+            model: MODEL_HAIKU,
             max_tokens: hasAttachments ? 6000 : 3000,
             messages: [{ role: 'user', content: userContent }],
         })
@@ -531,29 +656,74 @@ Return ONLY valid JSON:
             analysis = { drafted_reply: claudeRes.content[0]?.text || '', technique_detected: 'unknown' }
         }
 
+        // -- Detect Claude safety refusals ------------------------------------
+        // Claude sometimes refuses if the system prompt language triggers safety filters.
+        // If this happens, DO NOT save the refusal as a drafted reply � hold the email for manual review.
+        function isClaudeRefusal(text) {
+            if (!text) return false
+            const lower = text.toLowerCase()
+            const refusalSignals = [
+                "i won't", "i will not", "i'm not going to", "i cannot", "i can't",
+                "i refuse", "i'm declining", "this is manipulation", "psychological manipulation",
+                "i've been clear", "i've already declined", "not going to complete",
+                "what you've built", "systematizing deception", "won't roleplay",
+                "i won't do that", "that's not something i",
+            ]
+            return refusalSignals.some(sig => lower.includes(sig))
+        }
+
+        const rawDraft = analysis.drafted_reply || ''
+        const draftIsRefusal = isClaudeRefusal(rawDraft)
+        if (draftIsRefusal) {
+            console.warn('[email-inbound] Claude safety refusal detected � holding email, not scheduling send')
+        }
+
         // Compute scheduled send time using actual bluff_probability from Claude
         const actualUrgencyScore = analysis.bluff_probability != null ? 1 - analysis.bluff_probability : 0.5
         const { scheduledSendAt: finalScheduledSendAt, waitHours } = computeScheduledSendTime(
             threadDomain, new Date().toISOString(), responseTimeDeltaMs, actualUrgencyScore
         )
 
-        const { data: savedEmail } = await supabase
+        // Strip any accidental JSON/code fence wrapping from drafted_reply
+        function cleanDraftedReply(raw) {
+            if (!raw) return ''
+            const fenceMatch = raw.match(/```(?:json)?\s*[\s\S]*?```/)
+            if (fenceMatch) {
+                // Claude returned a code block � try extracting drafted_reply from it
+                try {
+                    const inner = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
+                    const parsed = JSON.parse(inner ? inner[1].trim() : raw.trim())
+                    return parsed.drafted_reply || raw
+                } catch { return raw }
+            }
+            // If it starts with { it's probably raw JSON � try to extract drafted_reply
+            if (raw.trimStart().startsWith('{')) {
+                try {
+                    const parsed = JSON.parse(raw.trim())
+                    if (parsed.drafted_reply) return parsed.drafted_reply
+                } catch { /* not JSON, use as-is */ }
+            }
+            return raw
+        }
+
+        const { data: savedEmail, error: saveErr } = await getDB()
             .from('emails')
             .insert({
                 thread_id: threadId,
                 direction: 'inbound',
                 from_email: counterpartyEmail,
-                to_email: toEmail || 'jdquist2025@gmail.com',
+                to_email: process.env.GMAIL_USER || 'jdquist2025@gmail.com', // always OUR address, not Postmark hash
                 subject,
                 body: emailBodyClean,
                 message_id: messageId || null,
                 claude_analysis: analysis,
-                drafted_reply: analysis.drafted_reply || '',
+                drafted_reply: draftIsRefusal ? '' : cleanDraftedReply(analysis.drafted_reply),
                 status: 'pending',
-                scheduled_send_at: finalScheduledSendAt,
-                send_status: 'scheduled',
+                scheduled_send_at: draftIsRefusal ? null : finalScheduledSendAt,
+                send_status: draftIsRefusal ? 'hold' : 'scheduled',
             })
             .select().single()
+        if (saveErr) console.error('[email-inbound] email insert error:', saveErr.message)
 
         // Persist counterparty profile + thread state updates from this analysis
         const profileUpdate = analysis.counterparty_profile_update
@@ -586,15 +756,114 @@ Return ONLY valid JSON:
                 mergedState.concessions_they_made = [...(threadState.concessions_they_made || []), ...stateUpdate.concessions_they_made]
             threadUpdates.thread_state = mergedState
         }
-        await supabase.from('email_threads').update(threadUpdates).eq('id', threadId)
+        await getDB().from('email_threads').update(threadUpdates).eq('id', threadId)
 
-        // ─── AUTONOMOUS MODE CIRCUIT BREAKERS ───────────────────────────────
+        // -- AUTO-REFLECTION + AUTONOMOUS LEARNING -----------------------------
+        // Self-eval after every exchange ? updates pattern scores ? discovers new patterns
+        try {
+            const lastOurEmail = (threadEmails || []).filter(e => e.direction === 'outbound').pop()
+            if (lastOurEmail) {
+                const reflectPrompt = `You are reviewing a negotiation exchange. Evaluate briefly.
+
+OUR LAST EMAIL:
+${lastOurEmail.body?.slice(0, 800) || 'N/A'}
+
+THEIR REPLY:
+${emailBodyClean.slice(0, 800)}
+
+OUR GOAL: ${threadRecord?.our_position?.goal || 'Unknown'}
+
+Respond with ONLY valid JSON:
+{
+  "did_advance": true/false,
+  "progress_score": 0-100,
+  "what_worked": "one line � what about our last move was effective",
+  "what_failed": "one line � what we should have done differently (null if n/a)",
+  "signal_changes": "one line � what changed in their posture/tone/urgency",
+  "recommended_adjustment": "one line � tactical adjustment for next move"
+}`
+
+                const reflectRes = await anthropic.messages.create({
+                    model: MODEL_HAIKU,
+                    max_tokens: 400,
+                    messages: [{ role: 'user', content: reflectPrompt }],
+                })
+
+                let reflection = null
+                try {
+                    const raw = reflectRes.content[0]?.text || ''
+                    const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
+                    reflection = JSON.parse(match ? match[1].trim() : raw.trim())
+                } catch { /* ignore parse errors */ }
+
+                if (reflection) {
+                    const existingLog = threadState.reflection_log || []
+                    existingLog.push({
+                        ...reflection,
+                        patterns_used: analysis.patterns_used || [],
+                        exchange_number: (threadEmails || []).length,
+                        timestamp: new Date().toISOString(),
+                    })
+                    await getDB().from('email_threads')
+                        .update({ thread_state: { ...(threadUpdates.thread_state || threadState), reflection_log: existingLog.slice(-20) } })
+                        .eq('id', threadId)
+                    console.log('[auto-reflect] reflection stored for thread', threadId, '� progress:', reflection.progress_score)
+
+                    // -- PATTERN SCORE UPDATE (Autonomous Learning) --------------
+                    // Boost patterns that worked, penalize ones that didn't
+                    const patternsUsed = analysis.patterns_used || []
+                    if (patternsUsed.length > 0) {
+                        const scoreChange = reflection.did_advance ? 0.03 : -0.02
+                        for (const patternRef of patternsUsed) {
+                            // Try matching by ID first, then by tactic name
+                            const { data: matchedPattern } = await getDB()
+                                .from('learned_patterns')
+                                .select('id, confidence_score')
+                                .or(`id.eq.${patternRef},tactic_used.ilike.%${String(patternRef).slice(0, 40)}%`)
+                                .limit(1).single()
+                            if (matchedPattern) {
+                                const newScore = Math.max(0.20, Math.min(0.99, (matchedPattern.confidence_score || 0.7) + scoreChange))
+                                await getDB().from('learned_patterns')
+                                    .update({
+                                        confidence_score: parseFloat(newScore.toFixed(3)),
+                                        last_validated_at: new Date().toISOString(),
+                                    })
+                                    .eq('id', matchedPattern.id)
+                            }
+                        }
+                        console.log(`[auto-learn] updated ${patternsUsed.length} patterns � advance=${reflection.did_advance} change=${scoreChange}`)
+                    }
+
+                    // -- SELF-GENERATED PATTERNS (Novel Tactic Discovery) ---------
+                    // When ARCHI discovers a new tactic that works, create a new pattern
+                    if (reflection.did_advance && analysis.novel_tactic && analysis.novel_tactic !== 'null') {
+                        await getDB().from('learned_patterns').insert({
+                            source_type: 'self_discovered',
+                            domain: threadDomain || 'General',
+                            situation_type: `Exchange ${(threadEmails || []).length} � counterparty used ${analysis.technique_detected || 'unknown tactic'}`,
+                            tactic_used: analysis.novel_tactic,
+                            what_worked: reflection.what_worked,
+                            what_failed: reflection.what_failed || null,
+                            lesson: `Self-discovered during live negotiation: ${analysis.novel_tactic}`,
+                            outcome_type: 'unknown',
+                            source_thread_id: threadId,
+                            confidence_score: 0.60,
+                        })
+                        console.log('[auto-learn] NEW SELF-DISCOVERED PATTERN:', analysis.novel_tactic)
+                    }
+                }
+            }
+        } catch (reflectErr) {
+            console.error('[auto-reflect] failed (non-blocking):', reflectErr.message)
+        }
+
+        // --- AUTONOMOUS MODE CIRCUIT BREAKERS -------------------------------
         // Prevent infinite loops, runaway sends, and stalled conversations
-        if (threadMode === 'autonomous' && analysis.drafted_reply) {
+        if (threadMode === 'autonomous' && analysis.drafted_reply && savedEmail?.id) {
             let blocked = false
             let blockReason = ''
 
-            // 1. DUPLICATE DETECTION — don't reply to the same message twice
+            // 1. DUPLICATE DETECTION � don't reply to the same message twice
             const recentInbound = (threadEmails || [])
                 .filter(e => e.direction === 'inbound')
                 .slice(-5)
@@ -606,10 +875,10 @@ Return ONLY valid JSON:
                 blockReason = 'duplicate_message'
             }
 
-            // 2. VELOCITY LIMITER — max 8 outbound emails per thread per 24 hours
+            // 2. VELOCITY LIMITER � max 8 outbound emails per thread per 24 hours
             if (!blocked) {
                 const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-                const { count: recentSentCount } = await supabase
+                const { count: recentSentCount } = await getDB()
                     .from('emails')
                     .select('id', { count: 'exact', head: true })
                     .eq('thread_id', threadId)
@@ -621,7 +890,7 @@ Return ONLY valid JSON:
                 }
             }
 
-            // 3. STALL DETECTION — last 3 inbound messages are identical = stuck loop
+            // 3. STALL DETECTION � last 3 inbound messages are identical = stuck loop
             if (!blocked) {
                 const lastThreeInbound = (threadEmails || [])
                     .filter(e => e.direction === 'inbound')
@@ -639,20 +908,22 @@ Return ONLY valid JSON:
             if (blocked) {
                 console.warn(`[autonomous-blocked] thread=${threadId} reason=${blockReason}`)
                 // Switch thread to coached mode so human reviews
-                await supabase
+                await getDB()
                     .from('email_threads')
                     .update({ mode: 'coached', updated_at: new Date().toISOString() })
                     .eq('id', threadId)
                 // Update email status to flag for review
-                await supabase
+                await getDB()
                     .from('emails')
                     .update({ status: `paused:${blockReason}` })
                     .eq('id', savedEmail.id)
             } else {
-                // All clear — auto-send
+                // All clear � auto-send
                 await fetch(`${process.env.URL}/.netlify/functions/email-send`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.ARCHI_API_KEY}`,
+            },
                     body: JSON.stringify({ email_id: savedEmail.id }),
                 }).catch(() => { })
             }
@@ -660,7 +931,9 @@ Return ONLY valid JSON:
 
         return {
             statusCode: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.ARCHI_API_KEY}`,
+            },
             body: JSON.stringify({
                 thread_id: threadId,
                 email_id: savedEmail.id,

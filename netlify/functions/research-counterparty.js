@@ -6,9 +6,10 @@
  * Called on first email in any new thread.
  */
 
-import { createClient } from '@supabase/supabase-js'
+$args[0].Groups[1].Value + $args[0].Groups[2].Value + ", handleOptions" + $args[0].Groups[3].Value
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+let _db
+function getDB() { return (_db ??= getSupabaseAdmin()) }
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY
 
 async function tavilySearch(query, maxResults = 5) {
@@ -39,7 +40,7 @@ function extractDomain(email) {
 }
 
 function extractName(fromHeader) {
-    // "John Smith <john@company.com>" â†’ "John Smith"
+    // "John Smith <john@company.com>" ? "John Smith"
     const match = fromHeader.match(/^([^<]+)</)
     return match ? match[1].trim() : fromHeader.split('@')[0]
 }
@@ -48,6 +49,8 @@ export const handler = async (event) => {
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) }
     }
+    if (event.httpMethod === 'OPTIONS') return handleOptions()
+    const authErr = requireAuth(event); if (authErr) return authErr
 
     let payload
     try { payload = JSON.parse(event.body) } catch {
@@ -60,24 +63,42 @@ export const handler = async (event) => {
         return { statusCode: 400, body: JSON.stringify({ error: 'thread_id and from_email required' }) }
     }
 
+    // Guard: if Tavily key is missing, write a neutral placeholder and return standardized error
+    if (!TAVILY_API_KEY) {
+        console.warn('[research-counterparty] TAVILY_API_KEY not set — writing placeholder intel')
+        const err = serviceError('tavily', 'TAVILY_API_KEY not configured — research skipped')
+        const placeholder = {
+            company_summary: 'Research skipped — TAVILY_API_KEY not configured.',
+            financial_health: 'Unknown',
+            recent_news: 'Unknown',
+            person_summary: 'Unknown',
+            leverage_signals: [],
+            negotiating_implications: 'Research unavailable. Set TAVILY_API_KEY in Netlify environment variables.',
+            researched_at: err.ts,
+            service_error: err,           // standardized shape — queryable from dashboard
+        }
+        await getDB().from('email_threads').update({ counterparty_intel: placeholder }).eq('id', thread_id)
+        return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intel: placeholder, service_error: err }) }
+    }
+
     const domain = extractDomain(from_email)
     const personName = rawName || extractName(from_email)
     const companyName = domain.split('.')[0]
 
     if (!domain || domain.includes('gmail.com') || domain.includes('yahoo.com') || domain.includes('hotmail.com')) {
-        // Personal email â€” research the person only
+        // Personal email — research the person only
         const personResults = await tavilySearch(`${personName} professional background negotiation industry`)
         const intel = {
-            company_summary: 'Personal email â€” no company domain available',
+            company_summary: 'Personal email — no company domain available',
             financial_health: 'Unknown',
             recent_news: 'No company domain found',
             person_summary: personResults,
             leverage_signals: [],
-            negotiating_implications: 'Individual negotiator â€” focus on personal motivations, career stage, risk tolerance',
+            negotiating_implications: 'Individual negotiator — focus on personal motivations, career stage, risk tolerance',
             researched_at: new Date().toISOString(),
             domain,
         }
-        await supabase.from('email_threads').update({ counterparty_intel: intel }).eq('id', thread_id)
+        await getDB().from('email_threads').update({ counterparty_intel: intel }).eq('id', thread_id)
         return { statusCode: 200, body: JSON.stringify({ intel }) }
     }
 
@@ -100,32 +121,32 @@ export const handler = async (event) => {
     const financeLower = financialHealth.toLowerCase()
 
     if (newsLower.includes('layoff') || newsLower.includes('laid off') || newsLower.includes('workforce reduction')) {
-        leverageSignals.push('Possible layoffs detected â€” company under cost pressure, may urgently need deals to show value')
+        leverageSignals.push('Possible layoffs detected — company under cost pressure, may urgently need deals to show value')
     }
     if (newsLower.includes('cfo') || newsLower.includes('ceo') || newsLower.includes('executive departure')) {
-        leverageSignals.push('Executive departure detected â€” procurement oversight may be disrupted or inconsistent')
+        leverageSignals.push('Executive departure detected — procurement oversight may be disrupted or inconsistent')
     }
     if (financeLower.includes('series a') || financeLower.includes('series b') || financeLower.includes('series c')) {
         const match = financeLower.match(/series ([a-d])/i)
         if (match) {
-            leverageSignals.push(`Recently raised Series ${match[1].toUpperCase()} â€” under investor pressure to show revenue and growth; may prioritize closing deals`)
+            leverageSignals.push(`Recently raised Series ${match[1].toUpperCase()} — under investor pressure to show revenue and growth; may prioritize closing deals`)
         }
     }
     if (newsLower.includes('acquisition') || newsLower.includes('merger') || newsLower.includes('acquired')) {
-        leverageSignals.push('M&A activity detected â€” organizational priorities may be in flux; decision authority could be uncertain')
+        leverageSignals.push('M&A activity detected — organizational priorities may be in flux; decision authority could be uncertain')
     }
     if (newsLower.includes('regulatory') || newsLower.includes('lawsuit') || newsLower.includes('ftc') || newsLower.includes('doj')) {
-        leverageSignals.push('Regulatory or legal pressure detected â€” timeline urgency may be real; reputational sensitivity elevated')
+        leverageSignals.push('Regulatory or legal pressure detected — timeline urgency may be real; reputational sensitivity elevated')
     }
     if (newsLower.includes('ipo') || newsLower.includes('going public')) {
-        leverageSignals.push('IPO preparation detected â€” compliance, optics, and deal documentation standards are elevated; they want clean deals')
+        leverageSignals.push('IPO preparation detected — compliance, optics, and deal documentation standards are elevated; they want clean deals')
     }
 
     // Determine negotiating implications
     let negotiatingImplications = 'Standard commercial negotiation posture.'
     if (leverageSignals.length > 0) {
         if (leverageSignals.some(s => s.includes('pressure') || s.includes('urgency'))) {
-            negotiatingImplications = 'Counterparty likely under external pressure. Their urgency may be real â€” exploit timeline without revealing you know. Hold firm on price; they need to show deal activity.'
+            negotiatingImplications = 'Counterparty likely under external pressure. Their urgency may be real — exploit timeline without revealing you know. Hold firm on price; they need to show deal activity.'
         } else if (leverageSignals.some(s => s.includes('acquisition'))) {
             negotiatingImplications = 'Organizational change creates uncertainty about decision authority. Confirm the actual decision-maker before making major concessions. Change creates urgency on their side.'
         }
@@ -145,7 +166,7 @@ export const handler = async (event) => {
     }
 
     // Store in Supabase
-    await supabase.from('email_threads').update({ counterparty_intel: intel }).eq('id', thread_id)
+    await getDB().from('email_threads').update({ counterparty_intel: intel }).eq('id', thread_id)
 
     return { statusCode: 200, body: JSON.stringify({ intel }) }
 }

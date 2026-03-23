@@ -67,7 +67,7 @@ export default function PositionBriefCard({ thread, onConfirm, onDismiss }) {
                 borderBottom: '1px solid rgba(0,0,0,0.06)',
                 display: 'flex', alignItems: 'center', gap: '10px',
             }}>
-                <span style={{ fontSize: '20px' }}>📋</span>
+
                 <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '13px', fontWeight: '700', color: 'rgba(0,0,0,0.82)' }}>
                         {isAiDrafted ? 'AI-Drafted Position Brief' : 'Negotiation Brief'}
@@ -166,7 +166,7 @@ export default function PositionBriefCard({ thread, onConfirm, onDismiss }) {
                         transition: 'all 0.18s ease',
                     }}
                 >
-                    {saving ? '⏳ Saving…' : '✓ Lock It In'}
+                    {saving ? 'Saving…' : 'Lock It In'}
                 </button>
                 <button
                     onClick={onDismiss}
@@ -181,7 +181,7 @@ export default function PositionBriefCard({ thread, onConfirm, onDismiss }) {
                     Later
                 </button>
                 <span style={{ marginLeft: 'auto', fontSize: '10px', color: 'rgba(0,0,0,0.28)' }}>
-                    {isAiDrafted ? '🤖 AI-suggested · edit anything' : 'Your brief · edit anytime'}
+                    {isAiDrafted ? 'AI-suggested · edit anything' : 'Your brief · edit anytime'}
                 </span>
             </div>
         </div>

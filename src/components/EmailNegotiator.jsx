@@ -1,13 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { createClient } from '@supabase/supabase-js'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { apiFetch } from '../api/apiFetch'
 import IntelligenceDashboard from './IntelligenceDashboard'
 import PositionBriefCard from './PositionBriefCard'
 import StartNegotiationWizard from './StartNegotiationWizard'
 
-const supabase = createClient(
-    import.meta.env.VITE_SUPABASE_URL,
-    import.meta.env.VITE_SUPABASE_ANON_KEY
-)
+import { supabase } from '../api/supabaseClient'
 
 const WEBHOOK_URL = `${window.location.origin}/api/email-inbound`
 
@@ -73,6 +70,29 @@ export default function EmailNegotiator() {
 
     useEffect(() => { loadThreads() }, [loadThreads])
 
+    const selectedThreadRef = useRef(selectedThread)
+    useEffect(() => { selectedThreadRef.current = selectedThread }, [selectedThread])
+
+    // Realtime subscription — auto-refresh when new emails arrive via Postmark webhook
+    useEffect(() => {
+        const channel = supabase
+            .channel('email-negotiator-realtime')
+            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'emails' }, () => {
+                loadThreads()
+                const st = selectedThreadRef.current
+                if (st) {
+                    supabase.from('emails').select('*').eq('thread_id', st.id)
+                        .order('created_at', { ascending: true })
+                        .then(({ data }) => { if (data) setEmails(data) })
+                }
+            })
+            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'email_threads' }, () => {
+                loadThreads()
+            })
+            .subscribe()
+        return () => supabase.removeChannel(channel)
+    }, [loadThreads])
+
     async function selectThread(thread) {
         // Always fetch fresh thread with intelligence columns
         const { data: fresh } = await supabase
@@ -105,13 +125,10 @@ export default function EmailNegotiator() {
         try {
             // Override scheduled send — send immediately
             await supabase.from('emails').update({ send_status: 'sending_now', scheduled_send_at: null }).eq('id', pendingEmail.id)
-            const res = await fetch('/api/email-send', {
+            const data = await apiFetch('/api/email-send', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email_id: pendingEmail.id, custom_reply: draftEdit }),
             })
-            const data = await res.json()
-            if (!res.ok) throw new Error(data.error)
             setLog(`✅ Sent to ${data.sent_to}`)
             setScheduledTime(null)
             await selectThread(selectedThread)
@@ -163,9 +180,8 @@ export default function EmailNegotiator() {
         setReflectLoading(true)
         setLog('Analyzing negotiation and extracting lessons…')
         try {
-            const res = await fetch('/.netlify/functions/negotiation-reflect', {
+            const data = await apiFetch('/.netlify/functions/negotiation-reflect', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     thread_id: selectedThread.id,
                     outcome: outcome.outcome,
@@ -173,7 +189,6 @@ export default function EmailNegotiator() {
                     notes: outcome.notes || null,
                 }),
             })
-            const data = await res.json()
             setLog(`✅ ${data.patterns} lessons extracted and added to Knowledge Library`)
             setShowOutcome(false)
         } catch (err) {
@@ -205,7 +220,6 @@ export default function EmailNegotiator() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     From: manual.from,
-                    To: 'jdquist2025@gmail.com',
                     Subject: manual.subject,
                     TextBody: manual.body,
                     domain: manual.domain,
@@ -230,188 +244,188 @@ export default function EmailNegotiator() {
         }
     }
 
-    const s = {
+    const s = useMemo(() => ({
         container: {
-            display: 'flex', height: 'calc(100vh - 50px)',
+            display: 'flex', height: 'calc(100vh - 48px)',
             fontFamily: 'var(--font-ui)', color: 'var(--text-primary)',
+            background: 'var(--bg-app)',
         },
         sidebar: {
-            width: '252px', flexShrink: 0,
-            background: 'rgba(255,255,255,0.52)',
-            backdropFilter: 'blur(40px) saturate(180%)',
-            WebkitBackdropFilter: 'blur(40px) saturate(180%)',
-            borderRight: '1px solid rgba(255,255,255,0.7)',
-            boxShadow: '1px 0 0 rgba(0,0,0,0.05)',
+            width: '240px', flexShrink: 0,
+            background: 'var(--bg-surface)',
+            borderRight: '1px solid var(--border-mid)',
             display: 'flex', flexDirection: 'column',
         },
         sidebarHeader: {
-            padding: '11px 13px',
-            borderBottom: '1px solid rgba(0,0,0,0.07)',
+            padding: '10px 12px',
+            borderBottom: '1px solid var(--border-subtle)',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            background: 'rgba(255,255,255,0.02)',
         },
         sidebarTitle: {
-            color: 'var(--text-muted)', fontSize: '10px',
-            fontWeight: '700', letterSpacing: '0.08em', textTransform: 'uppercase',
+            color: 'var(--text-dim)', fontSize: '10px',
+            fontWeight: '700', letterSpacing: '0.10em', textTransform: 'uppercase',
         },
         threadList: { flex: 1, overflowY: 'auto' },
         threadItem: (selected) => ({
             padding: '10px 13px',
-            borderBottom: '1px solid rgba(0,0,0,0.05)',
+            borderBottom: '1px solid var(--border-subtle)',
             cursor: 'pointer',
-            background: selected
-                ? 'rgba(29,107,243,0.10)'
-                : 'transparent',
-            borderLeft: selected ? '3px solid var(--blue)' : '3px solid transparent',
-            transition: 'all 0.15s var(--ease)',
+            background: selected ? 'rgba(59,130,246,0.10)' : 'transparent',
+            borderLeft: selected ? '3px solid #3b82f6' : '3px solid transparent',
+            transition: 'all 0.15s ease',
         }),
         threadFrom: { fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
         threadSubject: { fontSize: '11px', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
         main: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 },
         mainHeader: {
-            padding: '11px 17px',
-            background: 'rgba(255,255,255,0.55)',
-            backdropFilter: 'blur(24px) saturate(160%)',
-            WebkitBackdropFilter: 'blur(24px) saturate(160%)',
-            borderBottom: '1px solid rgba(0,0,0,0.07)',
-            boxShadow: '0 1px 0 rgba(255,255,255,0.7)',
+            padding: '10px 16px',
+            background: 'rgba(13,17,23,0.97)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            borderBottom: '1px solid var(--border-mid)',
             flexShrink: 0,
         },
         emailList: {
             flex: 1, overflowY: 'auto',
             padding: '16px 18px',
-            display: 'flex', flexDirection: 'column', gap: '8px',
+            display: 'flex', flexDirection: 'column', gap: '10px',
+            background: 'var(--bg-app)',
         },
         emailBubble: (dir) => ({
-            maxWidth: '74%',
+            maxWidth: '72%',
             marginLeft: dir === 'outbound' ? 'auto' : '0',
             background: dir === 'outbound'
-                ? 'linear-gradient(145deg, #4a90f5 0%, #1d6bf3 100%)'
-                : 'rgba(255,255,255,0.75)',
-            backdropFilter: dir === 'outbound' ? 'none' : 'blur(20px) saturate(160%)',
-            WebkitBackdropFilter: dir === 'outbound' ? 'none' : 'blur(20px) saturate(160%)',
-            border: `1px solid ${dir === 'outbound' ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.85)'}`,
+                ? 'linear-gradient(145deg, #2563eb 0%, #1d4ed8 100%)'
+                : 'var(--bg-elevated)',
+            border: `1px solid ${dir === 'outbound' ? 'rgba(96,165,250,0.2)' : 'var(--border-mid)'}`,
             borderRadius: dir === 'outbound' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
             padding: '11px 15px',
             color: dir === 'outbound' ? '#fff' : 'var(--text-primary)',
             boxShadow: dir === 'outbound'
-                ? '0 4px 16px rgba(29,107,243,0.35), inset 0 1px 0 rgba(255,255,255,0.25)'
-                : '0 2px 12px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.9)',
+                ? '0 4px 20px rgba(29,78,216,0.4), inset 0 1px 0 rgba(255,255,255,0.1)'
+                : '0 2px 8px rgba(0,0,0,0.25)',
         }),
-        emailMeta: { fontSize: '10px', color: 'inherit', opacity: 0.6, marginBottom: '5px', fontWeight: '500' },
-        emailBody: { fontSize: '13px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 },
+        emailMeta: { fontSize: '10px', color: 'inherit', opacity: 0.5, marginBottom: '5px', fontWeight: '500' },
+        emailBody: { fontSize: '13px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.65 },
         analysisCard: {
-            background: 'rgba(255,255,255,0.65)',
-            backdropFilter: 'blur(20px) saturate(140%)',
-            WebkitBackdropFilter: 'blur(20px) saturate(140%)',
-            border: '1px solid rgba(255,255,255,0.8)',
-            borderRadius: '14px',
-            padding: '10px 13px', marginTop: '8px', fontSize: '11px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.07), inset 0 1px 0 rgba(255,255,255,0.9)',
-            color: 'var(--text-primary)',
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border-mid)',
+            borderLeft: '3px solid var(--accent-indigo)',
+            borderRadius: '10px',
+            padding: '9px 12px', marginTop: '6px', fontSize: '11px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            color: 'var(--text-secondary)',
         },
         analysisPill: {
             display: 'inline-flex', alignItems: 'center', gap: '4px',
-            background: 'rgba(117,80,233,0.10)',
-            color: '#6040cc',
-            border: '1px solid rgba(117,80,233,0.2)',
+            background: 'rgba(99,102,241,0.12)',
+            color: '#a5b4fc',
+            border: '1px solid rgba(99,102,241,0.25)',
             padding: '2px 9px', borderRadius: '99px',
             marginRight: '5px', marginBottom: '4px',
             fontSize: '10px', fontWeight: '600',
-            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7)',
+            boxShadow: '0 0 8px rgba(99,102,241,0.15)',
         },
         draftPanel: {
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            padding: '12px 17px',
-            background: 'rgba(255,255,255,0.70)',
-            backdropFilter: 'blur(40px) saturate(200%)',
-            WebkitBackdropFilter: 'blur(40px) saturate(200%)',
+            borderTop: '1px solid var(--border-mid)',
+            padding: '12px 16px',
+            background: 'var(--bg-surface)',
             flexShrink: 0,
-            boxShadow: '0 -1px 0 rgba(255,255,255,0.9)',
         },
         draftLabel: {
-            color: 'var(--text-muted)', fontSize: '10px',
-            fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '7px',
+            color: 'var(--text-dim)', fontSize: '10px',
+            fontWeight: '700', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '7px',
         },
         draftTextarea: {
             width: '100%', minHeight: '90px',
-            background: 'rgba(255,255,255,0.70)',
-            backdropFilter: 'blur(8px)',
-            WebkitBackdropFilter: 'blur(8px)',
-            border: '1px solid rgba(0,0,0,0.12)',
-            borderRadius: '12px',
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border-mid)',
+            borderRadius: '10px',
             color: 'var(--text-primary)',
             padding: '10px 13px',
-            fontFamily: 'var(--font-mono)', fontSize: '12px',
+            fontFamily: 'var(--font-ui)', fontSize: '13px',
             resize: 'vertical', boxSizing: 'border-box', outline: 'none',
-            boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.04)',
+            lineHeight: 1.6,
         },
         btnRow: { display: 'flex', gap: '7px', marginTop: '9px', alignItems: 'center', flexWrap: 'wrap' },
         logMsg: { fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto' },
-        empty: { color: 'rgba(0,0,0,0.2)', textAlign: 'center', marginTop: '80px', fontSize: '13px' },
+        empty: { color: 'var(--text-dim)', textAlign: 'center', marginTop: '80px', fontSize: '13px' },
+        sendBtn: {
+            background: 'linear-gradient(180deg, #3b82f6 0%, #1d4ed8 100%)',
+            color: '#fff', border: 'none', borderRadius: '10px',
+            padding: '8px 18px', fontSize: '13px', fontWeight: '600',
+            fontFamily: 'var(--font-ui)', cursor: 'pointer',
+            boxShadow: '0 2px 12px rgba(59,130,246,0.4)',
+            transition: 'all 0.15s ease',
+        },
+        skipBtn: {
+            background: 'rgba(255,255,255,0.05)',
+            color: 'var(--text-secondary)',
+            border: '1px solid var(--border-mid)',
+            borderRadius: '10px', padding: '8px 14px',
+            fontSize: '12px', fontFamily: 'var(--font-ui)', cursor: 'pointer',
+        },
         modal: {
             position: 'fixed', inset: 0, zIndex: 999,
-            background: 'rgba(0,0,0,0.25)',
-            backdropFilter: 'blur(12px) saturate(140%)',
-            WebkitBackdropFilter: 'blur(12px) saturate(140%)',
+            background: 'rgba(0,0,0,0.65)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
         },
         modalBox: {
-            background: 'rgba(255,255,255,0.82)',
-            backdropFilter: 'blur(48px) saturate(200%)',
-            WebkitBackdropFilter: 'blur(48px) saturate(200%)',
-            border: '1px solid rgba(255,255,255,0.9)',
-            borderRadius: '24px',
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: '18px',
             padding: '24px', width: '500px', maxWidth: '92vw',
-            boxShadow: '0 24px 64px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.95)',
+            boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
         },
-        modalTitle: { color: 'var(--text-primary)', marginBottom: '16px', fontSize: '15px', fontWeight: '600' },
+        modalTitle: { color: 'var(--text-primary)', marginBottom: '16px', fontSize: '15px', fontWeight: '700' },
         field: { marginBottom: '12px' },
         fieldLabel: {
-            color: 'var(--text-muted)', fontSize: '10px', fontWeight: '700',
-            letterSpacing: '0.07em', textTransform: 'uppercase', display: 'block', marginBottom: '5px',
+            color: 'var(--text-dim)', fontSize: '10px', fontWeight: '700',
+            letterSpacing: '0.08em', textTransform: 'uppercase', display: 'block', marginBottom: '5px',
         },
         fieldInput: {
-            width: '100%',
-            background: 'rgba(255,255,255,0.7)',
-            border: '1px solid rgba(0,0,0,0.14)', borderRadius: '10px',
+            width: '100%', boxSizing: 'border-box',
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border-mid)', borderRadius: '9px',
             color: 'var(--text-primary)', padding: '8px 11px',
-            fontFamily: 'var(--font-ui)', fontSize: '13px',
-            boxSizing: 'border-box', outline: 'none',
-            boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.04)',
+            fontFamily: 'var(--font-ui)', fontSize: '13px', outline: 'none',
         },
         fieldTextarea: {
-            width: '100%',
-            background: 'rgba(255,255,255,0.7)',
-            border: '1px solid rgba(0,0,0,0.14)', borderRadius: '10px',
+            width: '100%', boxSizing: 'border-box',
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border-mid)', borderRadius: '9px',
             color: 'var(--text-primary)', padding: '8px 11px',
-            fontFamily: 'var(--font-ui)', fontSize: '13px',
-            minHeight: '110px', resize: 'vertical', boxSizing: 'border-box', outline: 'none',
+            fontFamily: 'var(--font-ui)', fontSize: '13px', outline: 'none',
+            minHeight: '110px', resize: 'vertical', lineHeight: 1.6,
         },
         fieldSelect: {
-            width: '100%',
-            background: 'rgba(255,255,255,0.7)',
-            border: '1px solid rgba(0,0,0,0.14)', borderRadius: '10px',
+            width: '100%', boxSizing: 'border-box',
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border-mid)', borderRadius: '9px',
             color: 'var(--text-primary)', padding: '8px 11px',
-            fontFamily: 'var(--font-ui)', fontSize: '13px',
+            fontFamily: 'var(--font-ui)', fontSize: '13px', outline: 'none',
         },
         webhookBox: {
-            background: 'rgba(0,0,0,0.04)',
-            border: '1px solid rgba(0,0,0,0.08)',
-            borderRadius: '8px',
-            padding: '7px 10px', fontSize: '10px', color: 'var(--text-muted)',
-            marginBottom: '8px', wordBreak: 'break-all', cursor: 'pointer',
+            padding: '5px 8px', borderRadius: '6px',
+            background: 'var(--bg-input)', border: '1px solid var(--border-subtle)',
+            fontSize: '9px', color: 'var(--text-dim)', fontFamily: 'monospace',
+            cursor: 'pointer', wordBreak: 'break-all', overflow: 'hidden',
         },
-    }
+    }), [])
+
 
     return (
         <div style={s.container}>
             {/* Sidebar */}
             <div style={s.sidebar}>
                 <div style={s.sidebarHeader}>
-                    <span style={s.sidebarTitle}>✉️ Threads</span>
+                    <span style={s.sidebarTitle}>Threads</span>
                     <div style={{ display: 'flex', gap: '5px' }}>
                         <button className="btn btn-sky btn-xs" onClick={() => setShowManual(true)}>+ Email</button>
-                        <button className="btn btn-primary btn-xs" onClick={() => setShowWizard(true)} title="Start a new outbound negotiation">⚡ Start</button>
+                        <button className="btn btn-primary btn-xs" onClick={() => setShowWizard(true)} title="Start a new outbound negotiation">Start</button>
                     </div>
                 </div>
                 <div style={s.threadList}>
@@ -430,10 +444,10 @@ export default function EmailNegotiator() {
                                     <span style={{ color: 'var(--border-mid)' }}>·</span>
                                     <span style={{ color: 'var(--text-dim)', fontSize: '10px' }}>{t.mode}</span>
                                     {t.counterparty_intel && Object.keys(t.counterparty_intel).length > 0 && (
-                                        <span title="Intel gathered" style={{ color: '#38bdf8' }}>🔍</span>
+                                        <span title="Intel gathered" style={{ color: '#38bdf8', fontSize: '8px', fontWeight: '800' }}>●</span>
                                     )}
                                     {t.thread_state?.escalation_level > 2 && (
-                                        <span title={`Escalation level ${t.thread_state.escalation_level}`} style={{ color: '#f97316' }}>🔥</span>
+                                        <span title={`Escalation level ${t.thread_state.escalation_level}`} style={{ color: '#f97316', fontSize: '8px', fontWeight: '800' }}>▲</span>
                                     )}
                                 </div>
                             </div>
@@ -467,9 +481,9 @@ export default function EmailNegotiator() {
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <div style={{ color: 'var(--text-primary)', fontSize: '13px', fontWeight: '600' }}>{selectedThread.subject}</div>
                                 <div style={{ display: 'flex', gap: '6px' }}>
-                                    <button onClick={() => setShowOutcome(true)} className="btn btn-green btn-xs">🏁 Close</button>
+                                    <button onClick={() => setShowOutcome(true)} className="btn btn-green btn-xs">Close</button>
                                     <button onClick={handleToggleMode} className={`btn btn-xs ${selectedThread.mode === 'autonomous' ? 'btn-primary' : 'btn-ghost'}`}>
-                                        {selectedThread.mode === 'autonomous' ? '🤖 Auto' : '👁 Coached'}
+                                        {selectedThread.mode === 'autonomous' ? 'Auto' : 'Coached'}
                                     </button>
                                 </div>
                             </div>
@@ -513,12 +527,12 @@ export default function EmailNegotiator() {
                                 <div key={email.id} style={{ display: 'flex', flexDirection: 'column', alignItems: email.direction === 'outbound' ? 'flex-end' : 'flex-start' }}>
                                     <div style={s.emailBubble(email.direction)}>
                                         <div style={s.emailMeta}>{email.direction === 'inbound' ? '← THEM' : '→ US'} · {new Date(email.created_at).toLocaleString()} · <span style={{ color: STATUS_COLORS[email.status] || '#64748b' }}>{email.status}</span></div>
-                                        <div style={s.emailBody}>{email.body}</div>
+                                        <div style={s.emailBody}>{email.body || email.drafted_reply}</div>
                                         {email.direction === 'inbound' && email.claude_analysis && (
                                             <div style={s.analysisCard}>
                                                 {email.claude_analysis.psychological_read && (
                                                     <div style={{ marginBottom: '6px', padding: '6px 8px', background: '#1e1b4b', border: '1px solid #312e81', borderLeft: '2px solid #7c3aed' }}>
-                                                        <div style={{ fontSize: '10px', color: '#a5b4fc', fontWeight: 'bold', marginBottom: '3px' }}>🧠 PSYCH READ</div>
+                                                        <div style={{ fontSize: '10px', color: '#a5b4fc', fontWeight: 'bold', marginBottom: '3px' }}>PSYCH READ</div>
                                                         {email.claude_analysis.psychological_read.personality_type && (
                                                             <div style={{ fontSize: '10px', color: '#c4b5fd', marginBottom: '2px' }}>Personality: {email.claude_analysis.psychological_read.personality_type}</div>
                                                         )}

@@ -1,14 +1,13 @@
-import { createClient } from '@supabase/supabase-js'
+import { getSupabaseAdmin, requireAuth } from './fnUtils.js'
 
-const supabase = createClient(
-    process.env.VITE_SUPABASE_URL,
-    process.env.VITE_SUPABASE_ANON_KEY
-)
+let _db
+function getDB() { return (_db ??= getSupabaseAdmin()) }
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) }
     }
+    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try {
@@ -29,7 +28,7 @@ export const handler = async (event) => {
         let concessionBudget = 20
 
         if (config_id) {
-            const { data: config, error: configError } = await supabase
+            const { data: config, error: configError } = await getDB()
                 .from('configs').select('*').eq('id', config_id).single()
             if (configError) throw new Error(`Config fetch failed: ${configError.message}`)
             configSnapshot = config
@@ -37,13 +36,13 @@ export const handler = async (event) => {
             concessionBudget = config.concession_budget || 20
         }
 
-        const { data: session, error: sessionError } = await supabase
+        const { data: session, error: sessionError } = await getDB()
             .from('sessions')
             .insert({ domain, transcript: [], config_snapshot: configSnapshot })
             .select().single()
         if (sessionError) throw new Error(`Session creation failed: ${sessionError.message}`)
 
-        const { data: worldModel, error: wmError } = await supabase
+        const { data: worldModel, error: wmError } = await getDB()
             .from('world_model')
             .insert({
                 session_id: session.id,

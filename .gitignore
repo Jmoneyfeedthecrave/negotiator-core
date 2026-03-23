@@ -1,3 +1,8 @@
+# Environment variables — NEVER commit these
+.env
+.env.local
+.env.*.local
+
 # Scratch API key test files — never commit these
 test_key.*
 

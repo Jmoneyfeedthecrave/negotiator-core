@@ -7,14 +7,16 @@
  * Body: { session_id: string }
  */
 
-import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
+import { getSupabaseAdmin, MODEL_SONNET, requireAuth } from './fnUtils.js'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+let _db
+function getDB() { return (_db ??= getSupabaseAdmin()) }
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) }
+    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try { body = JSON.parse(event.body) } catch { return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON' }) } }
@@ -24,7 +26,7 @@ export const handler = async (event) => {
 
     try {
         // Fetch session
-        const { data: session, error: sessErr } = await supabase
+        const { data: session, error: sessErr } = await getDB()
             .from('sessions')
             .select('*')
             .eq('id', session_id)
@@ -63,7 +65,7 @@ Extract exactly these insights as JSON:
 Respond ONLY with valid JSON.`
 
         const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-5',
+            model: MODEL_SONNET,
             max_tokens: 1024,
             messages: [{ role: 'user', content: analysisPrompt }],
         })
@@ -81,7 +83,7 @@ Respond ONLY with valid JSON.`
         if (Array.isArray(analysis.tactic_observations)) {
             for (const obs of analysis.tactic_observations) {
                 try {
-                    await supabase.from('tactic_library').upsert({
+                    await getDB().from('tactic_library').upsert({
                         tactic_observed: obs.tactic_name,
                         domain: 'simulation',
                         counter_move: obs.was_effective ? 'continue' : 'adjust',
@@ -100,7 +102,7 @@ Respond ONLY with valid JSON.`
 
         // Store persona counter strategy in configs (using config_key column added in Phase 2 migration)
         try {
-            await supabase.from('configs').upsert({
+            await getDB().from('configs').upsert({
                 domain_label: `counter_strategy_${personaId}`,
                 config_key: `counter_strategy_${personaId}`,
                 config_value: {

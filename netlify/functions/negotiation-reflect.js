@@ -2,17 +2,20 @@
  * Netlify Function: negotiation-reflect
  * POST /api/negotiation-reflect
  * Called when user marks a thread outcome.
- * Claude analyses the full thread, extracts lessons â†’ stored in learned_patterns.
+ * Claude analyses the full thread, extracts lessons ? stored in learned_patterns.
  */
 
-import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
+$args[0].Groups[1].Value + $args[0].Groups[2].Value + ", handleOptions" + $args[0].Groups[3].Value
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+let _db
+function getDB() { return (_db ??= getSupabaseAdmin()) }
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' }
+    if (event.httpMethod === 'OPTIONS') return handleOptions()
+    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try { body = JSON.parse(event.body) } catch { return { statusCode: 400, body: 'Invalid JSON' } }
@@ -21,7 +24,7 @@ export const handler = async (event) => {
     if (!thread_id || !outcome) return { statusCode: 400, body: 'thread_id and outcome required' }
 
     // Save the outcome record
-    const { data: outcomeRecord, error: outcomeError } = await supabase
+    const { data: outcomeRecord, error: outcomeError } = await getDB()
         .from('negotiation_outcomes')
         .insert({ thread_id, outcome, deal_value: deal_value || null, notes: notes || null })
         .select().single()
@@ -29,12 +32,12 @@ export const handler = async (event) => {
     if (outcomeError) return { statusCode: 500, body: outcomeError.message }
 
     // Load the full thread
-    const { data: thread } = await supabase
+    const { data: thread } = await getDB()
         .from('email_threads')
         .select('domain, counterparty_email, subject')
         .eq('id', thread_id).single()
 
-    const { data: emails } = await supabase
+    const { data: emails } = await getDB()
         .from('emails')
         .select('direction, body, claude_analysis, created_at')
         .eq('thread_id', thread_id)
@@ -51,7 +54,7 @@ export const handler = async (event) => {
 NEGOTIATION DOMAIN: ${thread?.domain || 'General'}
 COUNTERPARTY: ${thread?.counterparty_email || 'Unknown'}
 SUBJECT: ${thread?.subject || 'Unknown'}
-FINAL OUTCOME: ${outcome.toUpperCase()}${deal_value ? ` â€” Deal value: $${deal_value}` : ''}
+FINAL OUTCOME: ${outcome.toUpperCase()}${deal_value ? ` — Deal value: $${deal_value}` : ''}
 ${notes ? `USER NOTES: ${notes}` : ''}
 
 FULL NEGOTIATION TRANSCRIPT:
@@ -77,7 +80,7 @@ Respond with valid JSON only:
 }`
 
     const claudeRes = await anthropic.messages.create({
-        model: 'claude-sonnet-4-5',
+        model: MODEL_HAIKU,
         max_tokens: 2048,
         messages: [{ role: 'user', content: prompt }],
     })
@@ -107,11 +110,48 @@ Respond with valid JSON only:
         confidence_score: p.confidence_score || 0.75,
     }))
 
-    const { error: insertError } = await supabase.from('learned_patterns').insert(patternRows)
+    const { error: insertError } = await getDB().from('learned_patterns').insert(patternRows)
     if (insertError) console.error('[reflect] insert error:', insertError.message)
 
+    // -- OUTCOME-DRIVEN PATTERN SCORING ----------------------------------
+    // Scan all emails in this thread for patterns_used and boost/penalize them
+    try {
+        const allPatternsUsed = new Set()
+        for (const email of emails) {
+            const emailAnalysis = email.claude_analysis
+            if (emailAnalysis?.patterns_used && Array.isArray(emailAnalysis.patterns_used)) {
+                emailAnalysis.patterns_used.forEach(p => allPatternsUsed.add(p))
+            }
+        }
+
+        if (allPatternsUsed.size > 0) {
+            const scoreMap = { win: 0.10, partial: 0.03, loss: -0.08, stalemate: -0.02 }
+            const change = scoreMap[outcome] || 0
+
+            for (const patternRef of allPatternsUsed) {
+                const { data: matched } = await getDB()
+                    .from('learned_patterns')
+                    .select('id, confidence_score')
+                    .or(`id.eq.${patternRef},tactic_used.ilike.%${String(patternRef).slice(0, 40)}%`)
+                    .limit(1).single()
+                if (matched) {
+                    const newScore = Math.max(0.20, Math.min(0.99, (matched.confidence_score || 0.7) + change))
+                    await getDB().from('learned_patterns')
+                        .update({
+                            confidence_score: parseFloat(newScore.toFixed(3)),
+                            last_validated_at: new Date().toISOString(),
+                        })
+                        .eq('id', matched.id)
+                }
+            }
+            console.log(`[reflect] outcome-scored ${allPatternsUsed.size} patterns — outcome=${outcome} change=${change}`)
+        }
+    } catch (scoreErr) {
+        console.error('[reflect] pattern scoring failed (non-blocking):', scoreErr.message)
+    }
+
     // Mark outcome as reflected
-    await supabase.from('negotiation_outcomes').update({ reflected: true }).eq('id', outcomeRecord.id)
+    await getDB().from('negotiation_outcomes').update({ reflected: true }).eq('id', outcomeRecord.id)
 
     return {
         statusCode: 200,
