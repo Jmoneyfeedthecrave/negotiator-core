@@ -91,7 +91,11 @@ export const handler = async () => {
                     log.push(`Processing reply from ${fromAddr}`)
 
                     const siteUrl = process.env.URL || 'https://negotiator-core.netlify.app'
-                    const resp = await fetch(`${siteUrl}/.netlify/functions/email-inbound`, {
+
+                    // Fire-and-forget — don't await Claude processing (would timeout)
+                    // Mark as read immediately so we don't reprocess
+                    await client.messageFlagsAdd(uid, ['\\Seen'])
+                    fetch(`${siteUrl}/.netlify/functions/email-inbound`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -102,16 +106,10 @@ export const handler = async () => {
                             MessageID: messageId,
                             ReplyTo: fromAddr,
                         }),
-                    })
+                    }).catch(err => console.error('[poll-gmail] email-inbound fire error:', err.message))
 
-                    if (resp.ok) {
-                        await client.messageFlagsAdd(uid, ['\\Seen'])
-                        processed++
-                        log.push(`✓ Processed reply from ${fromAddr}`)
-                    } else {
-                        const errText = await resp.text()
-                        log.push(`✗ email-inbound error ${resp.status}: ${errText.slice(0, 100)}`)
-                    }
+                    processed++
+                    log.push(`✓ Queued reply from ${fromAddr} for processing`)
                 } catch (msgErr) {
                     log.push(`Error on uid ${uid}: ${msgErr.message}`)
                 }
