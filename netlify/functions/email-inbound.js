@@ -355,14 +355,27 @@ export const handler = async (event) => {
                     .select('id')
                     .eq('counterparty_email', counterpartyEmail)
                     .ilike('subject', `%${baseSubject}%`)
-                    .eq('status', 'active')
+                    .not('thread_type', 'is', null)
                     .order('created_at', { ascending: false })
                     .limit(1)
                     .maybeSingle()
                 if (existing) threadId = existing.id
             }
 
-            // 3. No match — create a new thread
+            // 3. Fallback: match by counterparty email alone (catches subject-mismatch replies)
+            if (!threadId) {
+                const { data: existing } = await supabase
+                    .from('email_threads')
+                    .select('id')
+                    .eq('counterparty_email', counterpartyEmail)
+                    .eq('thread_type', 'outbound')
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .maybeSingle()
+                if (existing) threadId = existing.id
+            }
+
+            // 4. No match — create a new thread
             if (!threadId) {
                 const { data: session } = await supabase
                     .from('sessions')

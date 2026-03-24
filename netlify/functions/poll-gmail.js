@@ -87,7 +87,13 @@ export const handler = async () => {
                     }
                     if (!bodyText.trim()) { log.push(`Skip: empty body from ${fromAddr}`); continue }
 
-                    log.push(`Processing reply from ${fromAddr}`)
+                    // Extract In-Reply-To header so email-inbound can match to the correct thread
+                    const inReplyToMatch = rawEmail.match(/^In-Reply-To:\s*(.+)$/im)
+                    const inReplyTo = inReplyToMatch ? inReplyToMatch[1].trim() : ''
+                    const referencesMatch = rawEmail.match(/^References:\s*(.+)$/im)
+                    const references = referencesMatch ? referencesMatch[1].trim() : ''
+
+                    log.push(`Processing reply from ${fromAddr}${inReplyTo ? ` (re: ${inReplyTo.slice(0,40)})` : ''}`)
 
                     const siteUrl = process.env.URL || 'https://negotiator-core.netlify.app'
 
@@ -103,6 +109,8 @@ export const handler = async () => {
                             Subject: msg.envelope.subject || '',
                             TextBody: bodyText,
                             MessageID: messageId,
+                            InReplyTo: inReplyTo,
+                            References: references,
                             ReplyTo: fromAddr,
                         }),
                     }).catch(err => console.error('[poll-gmail] email-inbound fire error:', err.message))
