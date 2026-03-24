@@ -50,7 +50,7 @@ export const handler = async () => {
 
             for (const uid of uids) {
                 try {
-                    const msg = await client.fetchOne(uid, { envelope: true, bodyParts: ['TEXT'] })
+                    const msg = await client.fetchOne(uid, { envelope: true, source: true })
                     const fromAddr = msg.envelope.from?.[0]?.address?.toLowerCase()
                     if (!fromAddr) continue
 
@@ -74,8 +74,18 @@ export const handler = async () => {
                         continue
                     }
 
-                    const bodyPart = msg.bodyParts?.get('TEXT')
-                    const bodyText = bodyPart ? Buffer.from(bodyPart).toString('utf-8') : ''
+                    // Extract plain text from raw email source
+                    const rawEmail = msg.source ? Buffer.from(msg.source).toString('utf-8') : ''
+                    let bodyText = ''
+                    if (rawEmail) {
+                        const plainMatch = rawEmail.match(/Content-Type: text\/plain[^\n]*\n(?:[^\n]+\n)*\n([\s\S]+?)(?=--|\n\n--|$)/i)
+                        if (plainMatch) {
+                            bodyText = plainMatch[1].trim()
+                        } else {
+                            const headerEnd = rawEmail.indexOf('\n\n')
+                            bodyText = headerEnd > -1 ? rawEmail.slice(headerEnd + 2).trim() : rawEmail
+                        }
+                    }
                     if (!bodyText.trim()) { log.push(`Skip: empty body from ${fromAddr}`); continue }
 
                     log.push(`Processing reply from ${fromAddr}`)
