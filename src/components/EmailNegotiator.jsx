@@ -55,6 +55,7 @@ export default function EmailNegotiator() {
         const { data } = await supabase
             .from('email_threads')
             .select('*, counterparty_intel, counterparty_profile, thread_state')
+            .not('thread_type', 'is', null)
             .order('updated_at', { ascending: false })
         setThreads(data || [])
     }, [])
