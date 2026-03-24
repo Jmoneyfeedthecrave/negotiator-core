@@ -58,8 +58,8 @@ export const handler = async (event) => {
             to: toEmail,
             subject,
             text: replyText,
-            // Reply-To routes counterparty replies back to our Gmail inbox (polled by send-scheduled)
-            replyTo: ourEmail,
+            // Reply-To uses +negotiator alias so poll-gmail can filter precisely
+            replyTo: ourEmail.replace('@gmail.com', '+negotiator@gmail.com'),
             // Email threading headers so email clients show a proper thread
             ...(email.message_id && {
                 headers: {

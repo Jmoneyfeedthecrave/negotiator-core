@@ -43,10 +43,11 @@ export const handler = async () => {
         const lock = await client.getMailboxLock('INBOX')
 
         try {
-            // Search ALL emails in the last 4 hours — use message_id DB dedup, not Seen flag
-            const since = new Date(Date.now() - 4 * 60 * 60 * 1000)
-            const uids = await client.search({ since })
-            log.push(`Found ${uids.length} unseen emails`)
+            // Only pick up emails explicitly addressed to the +negotiator alias
+            const negotiatorAlias = GMAIL_USER.replace('@gmail.com', '+negotiator@gmail.com')
+            const since = new Date(Date.now() - 48 * 60 * 60 * 1000)
+            const uids = await client.search({ to: negotiatorAlias, since })
+            log.push(`Searching for replies to ${negotiatorAlias}: found ${uids.length}`)
 
             for (const uid of uids) {
                 try {
@@ -54,27 +55,21 @@ export const handler = async () => {
                     const fromAddr = msg.envelope.from?.[0]?.address?.toLowerCase()
                     if (!fromAddr) continue
 
-                    // Must be FROM a known counterparty AND subject must match the thread
-                    const emailSubject = (msg.envelope.subject || '').toLowerCase()
-                    const matchedThread = threads.find(t => {
-                        const cpMatch = (t.counterparty_email || '').toLowerCase() === fromAddr
-                        const threadSubj = (t.subject || '').toLowerCase().replace(/^re:\s*/i, '')
-                        const subjectMatch = emailSubject.includes(threadSubj) || emailSubject.includes('re:')
-                        return cpMatch && subjectMatch
-                    })
-                    if (!matchedThread) {
-                        log.push(`Skip: ${fromAddr} / "${msg.envelope.subject}" doesn't match any negotiation thread`)
-                        continue
-                    }
-
+                    // Deduplicate by message_id
                     const messageId = msg.envelope.messageId
-
-                    // Skip if already processed
                     const { data: existing } = await supabase
                         .from('emails').select('id').eq('message_id', messageId).single()
                     if (existing) {
-                        await client.messageFlagsAdd(uid, ['\\Seen'])
                         log.push(`Skip: ${fromAddr} already processed`)
+                        continue
+                    }
+
+                    // Also verify sender is a known counterparty
+                    const matchedThread = threads.find(t =>
+                        (t.counterparty_email || '').toLowerCase() === fromAddr
+                    )
+                    if (!matchedThread) {
+                        log.push(`Skip: ${fromAddr} sent to alias but not a known counterparty`)
                         continue
                     }
 
