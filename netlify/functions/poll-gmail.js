@@ -43,9 +43,9 @@ export const handler = async () => {
         const lock = await client.getMailboxLock('INBOX')
 
         try {
-            // Only look at the last 4 hours — avoids re-scanning old unrelated mail
+            // Search ALL emails in the last 4 hours — use message_id DB dedup, not Seen flag
             const since = new Date(Date.now() - 4 * 60 * 60 * 1000)
-            const uids = await client.search({ unseen: true, since })
+            const uids = await client.search({ since })
             log.push(`Found ${uids.length} unseen emails`)
 
             for (const uid of uids) {
