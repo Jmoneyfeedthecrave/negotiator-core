@@ -5,15 +5,14 @@
  * Signed URL keeps the API key server-side — never exposed to the browser.
  */
 
-import { serviceError, errResponse, requireAuth } from './fnUtils.js'
+import { serviceError, errResponse } from './fnUtils.js'
 
 const AGENT_ID = process.env.ELEVENLABS_AGENT_ID || 'agent_0901kc9sw5z5edmt9g7c04snwn0z'
 
-export const handler = async (event) => {
-    if (event.httpMethod === 'OPTIONS') {
-        return { statusCode: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, x-archi-api-key, Authorization', 'Access-Control-Allow-Methods': 'GET, OPTIONS' }, body: '' }
+export const handler = async (event) => {
+    if (event.httpMethod === 'OPTIONS') {
+        return { statusCode: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, x-archi-api-key, Authorization', 'Access-Control-Allow-Methods': 'GET, OPTIONS' }, body: '' }
     }
-    const authErr = requireAuth(event); if (authErr) return authErr
     const apiKey = process.env.ELEVENLABS_API_KEY
     if (!apiKey) {
         return errResponse(serviceError('elevenlabs', 'ELEVENLABS_API_KEY not configured'))

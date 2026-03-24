@@ -8,7 +8,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-import { getSupabaseAdmin, MODEL_HAIKU, PERSONAS, requireAuth } from './fnUtils.js'
+import { getSupabaseAdmin, MODEL_HAIKU, PERSONAS } from './fnUtils.js'
 
 let _db
 function getDB() { return (_db ??= getSupabaseAdmin()) }
@@ -69,7 +69,6 @@ OUTPUT: Respond with JSON only:
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) }
-    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try { body = JSON.parse(event.body) } catch { return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON' }) } }
@@ -87,7 +86,7 @@ export const handler = async (event) => {
     const persona = getPersona(persona_id)
 
     try {
-        // Pull learned patterns from DB — ARCHI uses its real knowledge
+        // Pull learned patterns from DB Â— ARCHI uses its real knowledge
         let techniques = []
         try {
             const { data: learnedPatterns } = await getDB()
@@ -142,7 +141,7 @@ export const handler = async (event) => {
             turnsCompleted = turn
             // First-person perspective: each conversation array is owned by one party.
             // Self = assistant, counterparty = user. Never push your own response as user
-            // in your own array — that breaks Claude's alternation requirement.
+            // in your own array Â— that breaks Claude's alternation requirement.
 
             // Instance B responds
             const bSystemPrompt = buildCounterpartyBPrompt(persona, domain, target_value * 0.85)
@@ -168,7 +167,7 @@ export const handler = async (event) => {
             if (bParsed.deal_accepted) { dealValue = currentOfferA; outcome = dealValue >= batna_value ? 'won' : 'batna_breach'; break }
             if (bParsed.walk_away) { outcome = 'stalemate'; break }
 
-            // B responded — record that as assistant in B's conversation, then A hears it as user
+            // B responded Â— record that as assistant in B's conversation, then A hears it as user
             conversationB.push({ role: 'assistant', content: bParsed.response })
             conversationA.push({ role: 'user', content: bParsed.response })
 
@@ -192,7 +191,7 @@ export const handler = async (event) => {
 
             if (aParsed.technique_used) techniquesUsed.push(aParsed.technique_used)
             if (aParsed.my_current_offer) currentOfferA = aParsed.my_current_offer
-            // A responded — record as assistant in A's conversation, then B hears it as user
+            // A responded Â— record as assistant in A's conversation, then B hears it as user
             conversationA.push({ role: 'assistant', content: aParsed.response })
             conversationB.push({ role: 'user', content: aParsed.response })
             transcript.push({ turn, speaker: 'negotiator_a', technique: aParsed.technique_used, reasoning: aParsed.reasoning, content: aParsed.response, offer: currentOfferA })

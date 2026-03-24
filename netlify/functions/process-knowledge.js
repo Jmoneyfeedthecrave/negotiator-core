@@ -5,9 +5,9 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-import { getSupabaseAdmin, MODEL_HAIKU, requireAuth } from './fnUtils.js'
+import { getSupabaseAdmin, MODEL_HAIKU } from './fnUtils.js'
 
-// Netlify function config — extend timeout for LLM processing
+// Netlify function config Â— extend timeout for LLM processing
 export const config = { path: "/api/process-knowledge" }
 
 let _db
@@ -16,7 +16,6 @@ const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' }
-    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try { body = JSON.parse(event.body) } catch { return { statusCode: 400, body: 'Invalid JSON' } }
@@ -42,7 +41,7 @@ ${source.content_text.slice(0, 60000)}
 
 Extract every specific, actionable negotiation lesson from this source.
 Focus on: specific situations that trigger tactics, what the tactic is, what outcome it produces.
-Each lesson must be concrete and reusable — no generalities.
+Each lesson must be concrete and reusable Â— no generalities.
 Aim for 5-15 patterns depending on the richness of the source.
 
 Respond with valid JSON only:

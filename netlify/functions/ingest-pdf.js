@@ -5,7 +5,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-import { getSupabaseAdmin, MODEL_HAIKU, requireAuth } from './fnUtils.js'
+import { getSupabaseAdmin, MODEL_HAIKU } from './fnUtils.js'
 
 let _db
 function getDB() { return (_db ??= getSupabaseAdmin()) }
@@ -13,7 +13,6 @@ const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' }
-    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try { body = JSON.parse(event.body) } catch { return { statusCode: 400, body: 'Invalid JSON' } }

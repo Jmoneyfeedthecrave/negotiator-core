@@ -8,7 +8,7 @@
  * KORA voice ID (EVI 3 clone): 59cfc7ab-e945-43de-ad1a-471daa379c67
  */
 
-import { getSupabaseAdmin, requireAuth, serviceError, errResponse } from './fnUtils.js'
+import { getSupabaseAdmin, serviceError, errResponse } from './fnUtils.js'
 
 let supabase
 function getDB() { return (supabase ??= getSupabaseAdmin()) }
@@ -114,7 +114,6 @@ async function createHumeConfig(promptId, configName) {
 // ── Main handler ──────────────────────────────────────────────────────────────
 export const handler = async (event) => {
     if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' }
-    const authErr = requireAuth(event); if (authErr) return authErr
 
     let body
     try { body = JSON.parse(event.body || '{}') } catch {
