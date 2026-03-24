@@ -13,6 +13,7 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@humeai/voice-react": "^0.2.14",
     "@supabase/supabase-js": "2.99.3",
+    "imapflow": "^1.2.16",
     "mammoth": "^1.11.0",
     "nodemailer": "^8.0.2",
     "pdf-parse": "^2.4.5",

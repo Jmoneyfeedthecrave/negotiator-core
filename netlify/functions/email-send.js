@@ -52,17 +52,14 @@ export const handler = async (event) => {
         const subject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || thread?.subject}`
         const ourEmail = process.env.GMAIL_USER || 'jdquist2025@gmail.com'
 
-        // Postmark inbound address — counterparty replies go here automatically
-        const postmarkInbound = process.env.POSTMARK_INBOUND_ADDRESS
-
         const transporter = getTransporter()
         const info = await transporter.sendMail({
             from: `"AI Negotiator" <${ourEmail}>`,
             to: toEmail,
             subject,
             text: replyText,
-            // KEY: Reply-To routes counterparty's reply to Postmark → our webhook
-            ...(postmarkInbound && { replyTo: postmarkInbound }),
+            // Reply-To routes counterparty replies back to our Gmail inbox (polled by send-scheduled)
+            replyTo: ourEmail,
             // Email threading headers so email clients show a proper thread
             ...(email.message_id && {
                 headers: {
