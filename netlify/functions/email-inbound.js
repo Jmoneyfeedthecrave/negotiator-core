@@ -500,8 +500,8 @@ Return ONLY valid JSON:
             ccChanges: 'not tracked via Postmark inbound',
         }
 
-        // Compute scheduled send timing
-        const urgencyScore = analysis.bluff_probability || 0.5  // will be recalculated after Claude, but pre-compute for timing
+        // Compute scheduled send timing (placeholder urgency — recalculated after Claude on line ~548)
+        const urgencyScore = 0.5
         const { scheduledSendAt } = computeScheduledSendTime(threadDomain, new Date().toISOString(), responseTimeDeltaMs, urgencyScore)
 
         // Process attachments — PDFs go natively to Claude, DOCX/TXT extracted as text
