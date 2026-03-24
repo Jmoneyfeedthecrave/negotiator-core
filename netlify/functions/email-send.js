@@ -48,7 +48,7 @@ export const handler = async (event) => {
         if (!replyText) throw new Error('No reply text available')
 
         const thread = email.email_threads
-        const toEmail = email.from_email || thread?.counterparty_email
+        const toEmail = email.to_email || thread?.counterparty_email || email.from_email
         const subject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || thread?.subject}`
         const ourEmail = process.env.GMAIL_USER || 'jdquist2025@gmail.com'
 
