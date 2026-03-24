@@ -100,7 +100,7 @@ export const handler = async () => {
                     // Fire-and-forget — don't await Claude processing (would timeout)
                     // Mark as read immediately so we don't reprocess
                     await client.messageFlagsAdd(uid, ['\\Seen'])
-                    fetch(`${siteUrl}/.netlify/functions/email-inbound`, {
+                    fetch(`${siteUrl}/.netlify/functions/email-inbound-background`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

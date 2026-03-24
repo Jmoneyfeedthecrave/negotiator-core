@@ -145,7 +145,7 @@ async function pollGmailInbox() {
                     }
 
                     const siteUrl = process.env.URL || 'https://negotiator-core.netlify.app'
-                    const resp = await fetch(`${siteUrl}/.netlify/functions/email-inbound`, {
+                    const resp = await fetch(`${siteUrl}/.netlify/functions/email-inbound-background`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(inboundPayload),
