@@ -43,8 +43,8 @@ export const handler = async () => {
         const lock = await client.getMailboxLock('INBOX')
 
         try {
-            // Search unseen emails from the last 48 hours
-            const since = new Date(Date.now() - 48 * 60 * 60 * 1000)
+            // Only look at the last 4 hours — avoids re-scanning old unrelated mail
+            const since = new Date(Date.now() - 4 * 60 * 60 * 1000)
             const uids = await client.search({ unseen: true, since })
             log.push(`Found ${uids.length} unseen emails`)
 
@@ -54,12 +54,16 @@ export const handler = async () => {
                     const fromAddr = msg.envelope.from?.[0]?.address?.toLowerCase()
                     if (!fromAddr) continue
 
-                    // Match to a known counterparty thread
-                    const matchedThread = threads.find(t =>
-                        (t.counterparty_email || '').toLowerCase() === fromAddr
-                    )
+                    // Must be FROM a known counterparty AND subject must match the thread
+                    const emailSubject = (msg.envelope.subject || '').toLowerCase()
+                    const matchedThread = threads.find(t => {
+                        const cpMatch = (t.counterparty_email || '').toLowerCase() === fromAddr
+                        const threadSubj = (t.subject || '').toLowerCase().replace(/^re:\s*/i, '')
+                        const subjectMatch = emailSubject.includes(threadSubj) || emailSubject.includes('re:')
+                        return cpMatch && subjectMatch
+                    })
                     if (!matchedThread) {
-                        log.push(`Skip: ${fromAddr} not a known counterparty`)
+                        log.push(`Skip: ${fromAddr} / "${msg.envelope.subject}" doesn't match any negotiation thread`)
                         continue
                     }
 
