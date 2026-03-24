@@ -74,20 +74,16 @@ export const handler = async (event) => {
 
         const sentMessageId = info.messageId
 
-        // Save outbound record with our Message-ID for future threading
-        await supabase.from('emails').insert({
-            thread_id: email.thread_id,
-            direction: 'outbound',
-            from_email: ourEmail,
-            to_email: toEmail,
-            subject,
-            body: replyText,
+        // Update the existing draft record in-place — do NOT insert a new record
+        await supabase.from('emails').update({
             status: 'sent',
             sent_at: new Date().toISOString(),
             message_id: sentMessageId,
-        })
-
-        await supabase.from('emails').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', email_id)
+            body: replyText,
+            from_email: ourEmail,
+            to_email: toEmail,
+            subject,
+        }).eq('id', email_id)
         await supabase.from('email_threads').update({ updated_at: new Date().toISOString() }).eq('id', email.thread_id)
 
         return {
