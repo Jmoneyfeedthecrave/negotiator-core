@@ -86,7 +86,7 @@ export const handler = async (event) => {
         return {
             statusCode: 200,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ success: true, sent_to: toEmail, reply_to: postmarkInbound || '(not set)' }),
+            body: JSON.stringify({ success: true, sent_to: toEmail, reply_to: ourEmail }),
         }
     } catch (err) {
         console.error('[email-send]', err)
