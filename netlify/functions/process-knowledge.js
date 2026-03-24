@@ -1,17 +1,13 @@
 /**
  * Netlify Function: process-knowledge
  * POST /api/process-knowledge
- * Takes a knowledge_sources row, runs Claude to extract patterns ? learned_patterns.
+ * Takes a knowledge_sources row, runs Claude to extract patterns → learned_patterns.
  */
 
+import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
-import { getSupabaseAdmin, MODEL_HAIKU } from './fnUtils.js'
 
-// Netlify function config  extend timeout for LLM processing
-export const config = { path: "/api/process-knowledge" }
-
-let _db
-function getDB() { return (_db ??= getSupabaseAdmin()) }
+const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 export const handler = async (event) => {
@@ -23,7 +19,7 @@ export const handler = async (event) => {
     const { knowledge_id } = body
     if (!knowledge_id) return { statusCode: 400, body: 'knowledge_id required' }
 
-    const { data: source, error } = await getDB()
+    const { data: source, error } = await supabase
         .from('knowledge_sources')
         .select('*')
         .eq('id', knowledge_id)
@@ -41,7 +37,7 @@ ${source.content_text.slice(0, 60000)}
 
 Extract every specific, actionable negotiation lesson from this source.
 Focus on: specific situations that trigger tactics, what the tactic is, what outcome it produces.
-Each lesson must be concrete and reusable  no generalities.
+Each lesson must be concrete and reusable — no generalities.
 Aim for 5-15 patterns depending on the richness of the source.
 
 Respond with valid JSON only:
@@ -61,7 +57,7 @@ Respond with valid JSON only:
 }`
 
     const claudeRes = await anthropic.messages.create({
-        model: MODEL_HAIKU,
+        model: 'claude-sonnet-4-5',
         max_tokens: 4096,
         messages: [{ role: 'user', content: prompt }],
     })
@@ -90,8 +86,8 @@ Respond with valid JSON only:
         confidence_score: p.confidence_score || 0.8,
     }))
 
-    await getDB().from('learned_patterns').insert(patternRows)
-    await getDB().from('knowledge_sources').update({
+    await supabase.from('learned_patterns').insert(patternRows)
+    await supabase.from('knowledge_sources').update({
         processed: true,
         pattern_count: patternRows.length,
     }).eq('id', knowledge_id)
