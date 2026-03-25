@@ -185,7 +185,7 @@ function Callout({ text, color = '#34d399', icon = '→' }) {
 /* ── Main Component ────────────────────────────────────── */
 export default function IntelligenceDashboard({ thread }) {
     const panel = {
-        width: '300px', minWidth: '300px',
+        width: '420px', minWidth: '420px',
         background: 'linear-gradient(180deg, #0d1117 0%, #0a0f1a 100%)',
         borderLeft: '1px solid rgba(255,255,255,0.07)',
         overflowY: 'auto', display: 'flex', flexDirection: 'column',
