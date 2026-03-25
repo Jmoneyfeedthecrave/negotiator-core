@@ -662,12 +662,30 @@ Return ONLY valid JSON:
                     .update({ status: `paused:${blockReason}` })
                     .eq('id', savedEmail.id)
             } else {
-                // All clear — auto-send
-                await fetch(`${process.env.URL}/.netlify/functions/email-send`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email_id: savedEmail.id }),
-                }).catch(() => { })
+                // All clear -- create a new OUTBOUND record, never reuse inbound ID
+                const replySubject = subject?.startsWith('Re:') ? subject : `Re: ${subject || ''}`
+                const { data: outboundEmail } = await supabase
+                    .from('emails')
+                    .insert({
+                        thread_id: threadId,
+                        direction: 'outbound',
+                        from_email: process.env.GMAIL_USER || 'jdquist2025@gmail.com',
+                        to_email: counterpartyEmail,
+                        subject: replySubject,
+                        body: analysis.drafted_reply,
+                        drafted_reply: analysis.drafted_reply,
+                        status: 'pending',
+                        scheduled_send_at: finalScheduledSendAt,
+                        send_status: 'scheduled',
+                    })
+                    .select().single()
+                if (outboundEmail?.id) {
+                    await fetch(`${process.env.URL}/.netlify/functions/email-send`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email_id: outboundEmail.id }),
+                    }).catch(() => { })
+                }
             }
         }
 
