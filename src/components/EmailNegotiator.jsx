@@ -50,6 +50,31 @@ export default function EmailNegotiator() {
     const [showTimingReason, setShowTimingReason] = useState(false)
     const timerRef = useRef(null)
     const [scheduledDisplay, setScheduledDisplay] = useState('')
+    const [intelWidth, setIntelWidth] = useState(420)
+    const isDraggingRef = useRef(false)
+    const dragStartXRef = useRef(0)
+    const dragStartWidthRef = useRef(420)
+
+    useEffect(() => {
+        function onMouseMove(e) {
+            if (!isDraggingRef.current) return
+            const delta = dragStartXRef.current - e.clientX
+            const next = Math.max(220, Math.min(700, dragStartWidthRef.current + delta))
+            setIntelWidth(next)
+        }
+        function onMouseUp() { isDraggingRef.current = false; document.body.style.cursor = '' }
+        window.addEventListener('mousemove', onMouseMove)
+        window.addEventListener('mouseup', onMouseUp)
+        return () => { window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp) }
+    }, [])
+
+    function startDrag(e) {
+        e.preventDefault()
+        isDraggingRef.current = true
+        dragStartXRef.current = e.clientX
+        dragStartWidthRef.current = intelWidth
+        document.body.style.cursor = 'col-resize'
+    }
 
     const loadThreads = useCallback(async () => {
         const { data } = await supabase
@@ -644,8 +669,21 @@ export default function EmailNegotiator() {
                 )}
             </div>
 
+            {/* Drag handle */}
+            <div
+                onMouseDown={startDrag}
+                style={{
+                    width: '5px', flexShrink: 0, cursor: 'col-resize',
+                    background: 'rgba(255,255,255,0.04)',
+                    borderLeft: '1px solid rgba(255,255,255,0.07)',
+                    transition: 'background 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(99,102,241,0.3)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
+            />
+
             {/* Intelligence Dashboard — right panel */}
-            <IntelligenceDashboard thread={selectedThread} />
+            <IntelligenceDashboard thread={selectedThread} width={intelWidth} />
 
             {/* Manual email modal */}
             {showManual && (

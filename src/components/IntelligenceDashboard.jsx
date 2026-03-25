@@ -183,11 +183,11 @@ function Callout({ text, color = '#34d399', icon = '→' }) {
 }
 
 /* ── Main Component ────────────────────────────────────── */
-export default function IntelligenceDashboard({ thread }) {
+export default function IntelligenceDashboard({ thread, width = 420 }) {
     const panel = {
-        width: '420px', minWidth: '420px',
+        width: `${width}px`, minWidth: `${width}px`,
         background: 'linear-gradient(180deg, #0d1117 0%, #0a0f1a 100%)',
-        borderLeft: '1px solid rgba(255,255,255,0.07)',
+        borderLeft: 'none',
         overflowY: 'auto', display: 'flex', flexDirection: 'column',
         fontFamily: FONT,
     }
