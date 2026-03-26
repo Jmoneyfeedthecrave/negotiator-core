@@ -23,6 +23,9 @@
 [functions."email-inbound"]
   timeout = 26
 
+[functions."email-inbound-background"]
+  timeout = 900
+
 [functions."simulate"]
   timeout = 26
 

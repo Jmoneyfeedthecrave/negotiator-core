@@ -95,10 +95,46 @@ export const handler = async () => {
 
                     log.push(`Processing reply from ${fromAddr}${inReplyTo ? ` (re: ${inReplyTo.slice(0,40)})` : ''}`)
 
+                    // ── STEP 1: Resolve best thread from In-Reply-To / References ──────────
+                    let threadId = matchedThread.id  // fallback: use the matched thread directly
+                    const msgIdsToCheck = [inReplyTo, ...references.split(/\s+/)].filter(Boolean)
+                    for (const mid of msgIdsToCheck) {
+                        const { data: threadMatch } = await supabase
+                            .from('emails').select('thread_id').eq('message_id', mid).maybeSingle()
+                        if (threadMatch?.thread_id) { threadId = threadMatch.thread_id; break }
+                    }
+
+                    // ── STEP 2: Pre-insert inbound email immediately ──────────────────────
+                    // Makes the reply visible in ARCHI right away.
+                    // Claude analysis enriches it async in the background.
+                    const { data: savedEmail } = await supabase
+                        .from('emails')
+                        .insert({
+                            thread_id: threadId,
+                            direction: 'inbound',
+                            from_email: fromAddr,
+                            to_email: GMAIL_USER,
+                            subject: msg.envelope.subject || '',
+                            body: bodyText,
+                            message_id: messageId || null,
+                            status: 'processing',
+                            send_status: 'scheduled',
+                        })
+                        .select('id').single()
+
+                    if (!savedEmail?.id) {
+                        log.push(`DB insert failed for ${fromAddr}`)
+                        continue
+                    }
+
+                    // Update thread timestamp so it surfaces in the UI
+                    await supabase.from('email_threads')
+                        .update({ updated_at: new Date().toISOString() })
+                        .eq('id', threadId)
+
                     const siteUrl = process.env.URL || 'https://negotiator-core.netlify.app'
 
-                    // Fire-and-forget — don't await Claude processing (would timeout)
-                    // Mark as read immediately so we don't reprocess
+                    // ── STEP 3: Mark as read then fire-and-forget Claude analysis ─────────
                     await client.messageFlagsAdd(uid, ['\\Seen'])
                     fetch(`${siteUrl}/.netlify/functions/email-inbound-background`, {
                         method: 'POST',
@@ -112,11 +148,14 @@ export const handler = async () => {
                             InReplyTo: inReplyTo,
                             References: references,
                             ReplyTo: fromAddr,
+                            // Pass the already-saved email id so background can update in-place
+                            email_id: savedEmail.id,
+                            thread_id: threadId,
                         }),
                     }).catch(err => console.error('[poll-gmail] email-inbound fire error:', err.message))
 
                     processed++
-                    log.push(`✓ Queued reply from ${fromAddr} for processing`)
+                    log.push(`✓ Saved reply from ${fromAddr} + queued Claude analysis`)
                 } catch (msgErr) {
                     log.push(`Error on uid ${uid}: ${msgErr.message}`)
                 }

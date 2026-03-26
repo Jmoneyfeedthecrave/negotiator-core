@@ -368,7 +368,7 @@ export const handler = async (event) => {
                     .from('email_threads')
                     .select('id')
                     .eq('counterparty_email', counterpartyEmail)
-                    .eq('thread_type', 'outbound')
+                    .not('thread_type', 'is', null)
                     .order('created_at', { ascending: false })
                     .limit(1)
                     .maybeSingle()

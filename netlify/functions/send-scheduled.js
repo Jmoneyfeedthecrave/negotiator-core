@@ -76,7 +76,7 @@ async function pollGmailInbox() {
 
     if (!threads?.length) return 0
 
-    const counterpartyEmails = new Set(threads.map(t => t.to_email || t.counterparty_email).filter(Boolean))
+
 
     const client = new ImapFlow({
         host: 'imap.gmail.com',
@@ -91,8 +91,9 @@ async function pollGmailInbox() {
         await client.connect()
         const lock = await client.getMailboxLock('INBOX')
         try {
-            // Search for unseen emails from any of our counterparties
-            const messages = await client.search({ unseen: true, since: new Date(Date.now() - 24 * 60 * 60 * 1000) })
+            // Search ALL recent mail — deduplicate by message_id in DB to avoid reprocessing
+            // DO NOT filter by unseen: Gmail marks your own replies as read before the cron fires
+            const messages = await client.search({ since: new Date(Date.now() - 24 * 60 * 60 * 1000) })
 
             for (const uid of messages) {
                 try {
@@ -119,14 +120,14 @@ async function pollGmailInbox() {
                     const subject = msg.envelope.subject || ''
                     const messageId = msg.envelope.messageId
 
-                    // Check if we've already processed this message
-                    const { data: existing } = await supabase
+                    // Deduplicate — skip if message already in DB
+                    const { data: alreadyProcessed } = await supabase
                         .from('emails')
                         .select('id')
                         .eq('message_id', messageId)
-                        .single()
+                        .maybeSingle()
 
-                    if (existing) {
+                    if (alreadyProcessed) {
                         // Already in DB — mark as read and skip
                         await client.messageFlagsAdd(uid, ['\\Seen'])
                         continue

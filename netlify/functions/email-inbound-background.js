@@ -312,11 +312,13 @@ export const handler = async (event) => {
         MessageID: messageId = '',
         InReplyTo: inReplyTo = '',
         Headers: headers = [],
-        // Also support manual submissions from the UI
+        // Support manual submissions from the UI
         thread_id: existingThreadId = null,
         domain = 'Email Negotiation',
         mode = 'coached',
         Attachments: attachments = [],
+        // Pre-inserted email record (from poll-gmail fast-path)
+        email_id: preInsertedEmailId = null,
     } = payload
 
     // Also check References header from Postmark's Headers array
@@ -368,7 +370,7 @@ export const handler = async (event) => {
                     .from('email_threads')
                     .select('id')
                     .eq('counterparty_email', counterpartyEmail)
-                    .eq('thread_type', 'outbound')
+                    .not('thread_type', 'is', null)
                     .order('created_at', { ascending: false })
                     .limit(1)
                     .maybeSingle()
@@ -550,23 +552,41 @@ Return ONLY valid JSON:
             threadDomain, new Date().toISOString(), responseTimeDeltaMs, actualUrgencyScore
         )
 
-        const { data: savedEmail } = await supabase
-            .from('emails')
-            .insert({
-                thread_id: threadId,
-                direction: 'inbound',
-                from_email: counterpartyEmail,
-                to_email: toEmail || 'jdquist2025@gmail.com',
-                subject,
-                body: emailBodyClean,
-                message_id: messageId || null,
-                claude_analysis: analysis,
-                drafted_reply: analysis.drafted_reply || '',
-                status: 'pending',
-                scheduled_send_at: finalScheduledSendAt,
-                send_status: 'scheduled',
-            })
-            .select().single()
+        // If poll-gmail pre-inserted the record, update it in-place with Claude analysis.
+        // Otherwise insert a new record (legacy path from Postmark webhook or manual submission).
+        let savedEmail
+        if (preInsertedEmailId) {
+            const { data } = await supabase
+                .from('emails')
+                .update({
+                    claude_analysis: analysis,
+                    drafted_reply: analysis.drafted_reply || '',
+                    status: 'pending',
+                    scheduled_send_at: finalScheduledSendAt,
+                })
+                .eq('id', preInsertedEmailId)
+                .select().single()
+            savedEmail = data
+        } else {
+            const { data } = await supabase
+                .from('emails')
+                .insert({
+                    thread_id: threadId,
+                    direction: 'inbound',
+                    from_email: counterpartyEmail,
+                    to_email: toEmail || 'jdquist2025@gmail.com',
+                    subject,
+                    body: emailBodyClean,
+                    message_id: messageId || null,
+                    claude_analysis: analysis,
+                    drafted_reply: analysis.drafted_reply || '',
+                    status: 'pending',
+                    scheduled_send_at: finalScheduledSendAt,
+                    send_status: 'scheduled',
+                })
+                .select().single()
+            savedEmail = data
+        }
 
         // Persist counterparty profile + thread state updates from this analysis
         const profileUpdate = analysis.counterparty_profile_update
