@@ -43,11 +43,13 @@ export const handler = async () => {
         const lock = await client.getMailboxLock('INBOX')
 
         try {
-            // Only pick up emails explicitly addressed to the +negotiator alias
-            const negotiatorAlias = GMAIL_USER.replace('@gmail.com', '+negotiator@gmail.com')
+            // Scan ALL mail from the last 48 hours — do NOT filter by to: address.
+            // Gmail's "Reply" button uses From: not Reply-To:, so counterparty replies
+            // may land in the main inbox, not the +negotiator alias.
+            // We match by sender against known counterparty emails instead.
             const since = new Date(Date.now() - 48 * 60 * 60 * 1000)
-            const uids = await client.search({ to: negotiatorAlias, since })
-            log.push(`Searching for replies to ${negotiatorAlias}: found ${uids.length}`)
+            const uids = await client.search({ since })
+            log.push(`Scanning all mail since ${since.toISOString()}: ${uids.length} messages`)
 
             for (const uid of uids) {
                 try {
@@ -55,21 +57,26 @@ export const handler = async () => {
                     const fromAddr = msg.envelope.from?.[0]?.address?.toLowerCase()
                     if (!fromAddr) continue
 
-                    // Deduplicate by message_id
-                    const messageId = msg.envelope.messageId
-                    const { data: existing } = await supabase
-                        .from('emails').select('id').eq('message_id', messageId).single()
-                    if (existing) {
-                        log.push(`Skip: ${fromAddr} already processed`)
+                    // Skip emails we ourselves sent
+                    if (fromAddr === GMAIL_USER.toLowerCase()) {
                         continue
                     }
 
-                    // Also verify sender is a known counterparty
+                    // Only process if sender is a known counterparty
                     const matchedThread = threads.find(t =>
                         (t.counterparty_email || '').toLowerCase() === fromAddr
                     )
                     if (!matchedThread) {
-                        log.push(`Skip: ${fromAddr} sent to alias but not a known counterparty`)
+                        log.push(`Skip: ${fromAddr} not a known counterparty`)
+                        continue
+                    }
+
+                    // Deduplicate by message_id
+                    const messageId = msg.envelope.messageId
+                    const { data: existing } = await supabase
+                        .from('emails').select('id').eq('message_id', messageId).maybeSingle()
+                    if (existing) {
+                        log.push(`Skip: ${fromAddr} already processed`)
                         continue
                     }
 
