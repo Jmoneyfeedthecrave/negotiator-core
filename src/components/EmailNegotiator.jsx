@@ -16,6 +16,34 @@ const STATUS_COLORS = {
     scheduled: '#38bdf8',
 }
 
+// Strip raw MIME headers, decode quoted-printable, remove quoted reply thread
+function sanitizeBody(raw) {
+    if (!raw) return ''
+    // If it looks like a raw MIME email (has email headers), extract the plain text part
+    if (/^(Delivered-To:|Received:|DKIM-Signature:|ARC-Seal:|Content-Type: multipart)/m.test(raw)) {
+        // Find the text/plain section
+        const plainMatch = raw.match(/Content-Type:\s*text\/plain[^\r\n]*\r?\n(?:[^\r\n]+\r?\n)*\r?\n([\s\S]*?)(?=\r?\n--|$)/i)
+        if (plainMatch) raw = plainMatch[1]
+        else {
+            // Fallback: skip all headers
+            const headerEnd = raw.search(/\r?\n\r?\n/)
+            raw = headerEnd > -1 ? raw.slice(headerEnd + 2) : raw
+        }
+    }
+    // Decode quoted-printable
+    raw = raw
+        .replace(/=\r?\n/g, '')
+        .replace(/=[0-9A-Fa-f]{2}/g, m => { try { return decodeURIComponent('%' + m.slice(1)) } catch { return m } })
+    // Strip quoted reply thread ("On ... wrote:" and everything after)
+    const threadIdx = raw.search(/\r?\nOn .+wrote:/s)
+    if (threadIdx > -1) raw = raw.slice(0, threadIdx)
+    // Strip lines starting with > (inline quote markers)
+    const lines = raw.split(/\r?\n/)
+    const clean = []
+    for (const line of lines) { if (line.trimStart().startsWith('>')) break; clean.push(line) }
+    return clean.join('\n').trim()
+}
+
 function formatScheduledTime(iso) {
     if (!iso) return null
     const d = new Date(iso)
@@ -553,7 +581,7 @@ export default function EmailNegotiator() {
                                 <div key={email.id} style={{ display: 'flex', flexDirection: 'column', alignItems: email.direction === 'outbound' ? 'flex-end' : 'flex-start' }}>
                                     <div style={s.emailBubble(email.direction)}>
                                         <div style={s.emailMeta}>{email.direction === 'inbound' ? '← THEM' : '→ US'} · {new Date(email.created_at).toLocaleString()} · <span style={{ color: STATUS_COLORS[email.status] || '#64748b' }}>{email.status}</span></div>
-                                        <div style={s.emailBody}>{email.body || email.drafted_reply}</div>
+                                        <div style={s.emailBody}>{sanitizeBody(email.body) || email.drafted_reply}</div>
                                         {email.direction === 'inbound' && email.claude_analysis && (
                                             <div style={s.analysisCard}>
                                                 {email.claude_analysis.psychological_read && (
