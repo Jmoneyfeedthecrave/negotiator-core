@@ -73,23 +73,48 @@ export const handler = async () => {
                         continue
                     }
 
-                    // Extract plain text from raw email source
+                    // Extract clean plain text from raw MIME email
                     const rawEmail = msg.source ? Buffer.from(msg.source).toString('utf-8') : ''
                     let bodyText = ''
                     if (rawEmail) {
-                        const plainMatch = rawEmail.match(/Content-Type: text\/plain[^\n]*\n(?:[^\n]+\n)*\n([\s\S]+?)(?=--|\n\n--|$)/i)
-                        if (plainMatch) {
-                            bodyText = plainMatch[1].trim()
+                        // Step 1: Find the text/plain MIME part (handles CRLF and LF)
+                        const plainPartMatch = rawEmail.match(
+                            /Content-Type:\s*text\/plain[^\r\n]*\r?\n(?:[^\r\n]+\r?\n)*\r?\n([\s\S]*?)(?=\r?\n--|\r?\n\r?\nContent-Type:|$)/i
+                        )
+                        if (plainPartMatch) {
+                            bodyText = plainPartMatch[1]
                         } else {
-                            const headerEnd = rawEmail.indexOf('\n\n')
-                            bodyText = headerEnd > -1 ? rawEmail.slice(headerEnd + 2).trim() : rawEmail
+                            // Fallback: skip all headers (everything before the first blank line)
+                            const headerEnd = rawEmail.search(/\r?\n\r?\n/)
+                            bodyText = headerEnd > -1 ? rawEmail.slice(headerEnd + 2) : rawEmail
                         }
+
+                        // Step 2: Decode quoted-printable encoding
+                        bodyText = bodyText
+                            .replace(/=\r?\n/g, '')                                             // soft line breaks
+                            .replace(/=[0-9A-Fa-f]{2}/g, m => {
+                                try { return decodeURIComponent('%' + m.slice(1)) }
+                                catch { return m }
+                            })
+
+                        // Step 3: Strip the quoted reply thread
+                        // Stop at "On ... wrote:" pattern
+                        const threadIdx = bodyText.search(/\r?\nOn .+wrote:\s*\r?\n/s)
+                        if (threadIdx > -1) bodyText = bodyText.slice(0, threadIdx)
+
+                        // Also stop at the first line starting with > (inline quote)
+                        const lines = bodyText.split(/\r?\n/)
+                        const cleanLines = []
+                        for (const line of lines) {
+                            if (line.trimStart().startsWith('>')) break
+                            cleanLines.push(line)
+                        }
+                        bodyText = cleanLines.join('\n').trim()
                     }
                     if (!bodyText.trim()) { log.push(`Skip: empty body from ${fromAddr}`); continue }
 
                     // Extract In-Reply-To header so email-inbound can match to the correct thread
                     const inReplyToMatch = rawEmail.match(/^In-Reply-To:\s*(.+)$/im)
-                    const inReplyTo = inReplyToMatch ? inReplyToMatch[1].trim() : ''
                     const referencesMatch = rawEmail.match(/^References:\s*(.+)$/im)
                     const references = referencesMatch ? referencesMatch[1].trim() : ''
 
