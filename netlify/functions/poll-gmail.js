@@ -122,6 +122,7 @@ export const handler = async () => {
 
                     // Extract In-Reply-To header so email-inbound can match to the correct thread
                     const inReplyToMatch = rawEmail.match(/^In-Reply-To:\s*(.+)$/im)
+                    const inReplyTo = inReplyToMatch ? inReplyToMatch[1].trim() : ''
                     const referencesMatch = rawEmail.match(/^References:\s*(.+)$/im)
                     const references = referencesMatch ? referencesMatch[1].trim() : ''
 
