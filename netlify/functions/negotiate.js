@@ -152,7 +152,7 @@ ${outputFormatBlock}
 
 const supabase = createClient(
     process.env.VITE_SUPABASE_URL,
-    process.env.VITE_SUPABASE_ANON_KEY
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
 )
 
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
@@ -186,18 +186,20 @@ export const handler = async (event) => {
             .eq('session_id', session_id)
             .order('updated_at', { ascending: false })
             .limit(1)
-            .single()
+            .maybeSingle()
 
         if (wmError) throw new Error(`World model fetch failed: ${wmError.message}`)
+        if (!worldModel) throw new Error(`World model not found for session ${session_id}`)
 
         // ── 2. Load session + config ─────────────────────────────────────────────
         const { data: session, error: sessionError } = await supabase
             .from('sessions')
             .select('*')
             .eq('id', session_id)
-            .single()
+            .maybeSingle()
 
         if (sessionError) throw new Error(`Session fetch failed: ${sessionError.message}`)
+        if (!session) throw new Error(`Session not found: ${session_id}`)
 
         // Use config_snapshot if no live config stored, else load from configs table
         let config = session.config_snapshot || {}
@@ -270,7 +272,7 @@ export const handler = async (event) => {
 
         // ── 7. Call Claude API ───────────────────────────────────────────────────
         const claudeResponse = await anthropic.messages.create({
-            model: 'claude-opus-4-5',
+            model: 'claude-opus-4-7',
             max_tokens: 4096,
             system: systemPrompt,
             messages,
@@ -318,20 +320,22 @@ export const handler = async (event) => {
         }
 
         const updatedTurnHistory = [...(worldModel.turn_history || []), newTurnEntry]
-        const updatedBluffTracker = parsed.bluff_probability_updates?.length
-            ? parsed.bluff_probability_updates
-            : worldModel.bluff_tracker
+        // Merge bluff tracker — accumulate across turns, overwrite existing claims by claim text
+        const existingBluffs = worldModel.bluff_tracker || []
+        const newBluffs = parsed.bluff_probability_updates || []
+        const bluffMap = new Map(existingBluffs.map(b => [b.claim, b]))
+        for (const b of newBluffs) bluffMap.set(b.claim, b)
+        const updatedBluffTracker = Array.from(bluffMap.values())
 
-        // Compute new concession remaining
+        // Compute new concession remaining — works for both seller and buyer perspectives
+        // Sellers concede by lowering their offer; buyers concede by raising theirs.
         const offerBefore = worldModel.current_offer?.value
         const offerAfter = parsed.updated_offer?.value
         let newConcessionRemaining = worldModel.concession_remaining
-        if (
-            typeof offerBefore === 'number' &&
-            typeof offerAfter === 'number' &&
-            perspective === 'seller'
-        ) {
-            const concessionMade = offerBefore - offerAfter
+        if (typeof offerBefore === 'number' && typeof offerAfter === 'number') {
+            const concessionMade = perspective === 'buyer'
+                ? offerAfter - offerBefore   // buyer concedes by going up
+                : offerBefore - offerAfter   // seller concedes by going down
             if (concessionMade > 0) {
                 newConcessionRemaining = Math.max(0, worldModel.concession_remaining - concessionMade)
             }

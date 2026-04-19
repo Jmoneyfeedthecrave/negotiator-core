@@ -10,7 +10,7 @@
 import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 export const handler = async (event) => {
@@ -63,7 +63,7 @@ Extract exactly these insights as JSON:
 Respond ONLY with valid JSON.`
 
         const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-5',
+            model: 'claude-opus-4-7',
             max_tokens: 1024,
             messages: [{ role: 'user', content: analysisPrompt }],
         })
@@ -98,25 +98,19 @@ Respond ONLY with valid JSON.`
             }
         }
 
-        // Store persona counter strategy in configs (using config_key column added in Phase 2 migration)
+        // Store persona counter strategy in persona_strategies (NOT configs — that table is live negotiation config only)
         try {
-            await supabase.from('configs').upsert({
-                domain_label: `counter_strategy_${personaId}`,
-                config_key: `counter_strategy_${personaId}`,
-                config_value: {
-                    persona_id: personaId,
-                    strategy: analysis.persona_counter_strategy,
-                    updated_at: new Date().toISOString(),
-                },
-                variables: {},
-                weights: {},
-                red_lines: {},
-                batna_value: 0,
-                concession_budget: 0,
-                approval_triggers: [],
-            }, { onConflict: 'config_key' })
+            await supabase.from('persona_strategies').upsert({
+                persona_id: personaId,
+                strategy: analysis.persona_counter_strategy,
+                most_effective_tactic: analysis.most_effective_tactic,
+                most_effective_tactic_reason: analysis.most_effective_tactic_reason,
+                key_mistake: analysis.key_mistake,
+                session_id,
+                updated_at: new Date().toISOString(),
+            }, { onConflict: 'persona_id' })
         } catch (e) {
-            console.warn('[post-game-analysis] config upsert skipped:', e.message)
+            console.warn('[post-game-analysis] persona_strategies upsert skipped:', e.message)
         }
 
         return {

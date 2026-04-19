@@ -15,7 +15,7 @@ import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
 import { NEGOTIATION_PLAYBOOK } from './negotiationPlaybook.js'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 async function fetchLearnedPatterns() {
@@ -138,7 +138,7 @@ export const handler = async (event) => {
         // 3. Call Claude to draft the opening email
         const prompt = buildOpeningEmailPrompt(our_position, counterparty_name, counterparty_email, threadDomain, learnedPatterns)
         const claudeRes = await anthropic.messages.create({
-            model:      'claude-sonnet-4-5',
+            model:      'claude-opus-4-7',
             max_tokens: 2000,
             messages:   [{ role: 'user', content: prompt }],
         })
@@ -162,7 +162,7 @@ export const handler = async (event) => {
             .insert({
                 thread_id:    threadId,
                 direction:    'outbound',
-                from_email:   'jdquist2025@gmail.com',
+                from_email:   process.env.GMAIL_USER || process.env.FROM_EMAIL,
                 to_email:     counterparty_email,
                 subject:      draft.subject_line || our_position.subject,
                 body:         '',              // no inbound body

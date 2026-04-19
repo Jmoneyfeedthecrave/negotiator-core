@@ -7,8 +7,9 @@ export async function getWorldModel(sessionId) {
         .eq('session_id', sessionId)
         .order('updated_at', { ascending: false })
         .limit(1)
-        .single()
+        .maybeSingle()
     if (error) throw new Error(`[getWorldModel] ${error.message}`)
+    if (!data) throw new Error(`[getWorldModel] No world model found for session ${sessionId}`)
     return data
 }
 
@@ -18,7 +19,7 @@ export async function updateWorldModel(sessionId, patch) {
         .update({ ...patch, updated_at: new Date().toISOString() })
         .eq('session_id', sessionId)
         .select()
-        .single()
+        .maybeSingle()
     if (error) throw new Error(`[updateWorldModel] ${error.message}`)
     return data
 }
@@ -35,7 +36,7 @@ export async function createWorldModel(sessionId, initialOffer = {}, concessionB
             turn_history: [],
         })
         .select()
-        .single()
+        .maybeSingle()
     if (error) throw new Error(`[createWorldModel] ${error.message}`)
     return data
 }

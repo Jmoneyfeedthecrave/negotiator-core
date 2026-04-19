@@ -8,7 +8,7 @@
 import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 export const handler = async (event) => {
@@ -24,7 +24,7 @@ export const handler = async (event) => {
     const { data: outcomeRecord, error: outcomeError } = await supabase
         .from('negotiation_outcomes')
         .insert({ thread_id, outcome, deal_value: deal_value || null, notes: notes || null })
-        .select().single()
+        .select().maybeSingle()
 
     if (outcomeError) return { statusCode: 500, body: outcomeError.message }
 
@@ -32,7 +32,7 @@ export const handler = async (event) => {
     const { data: thread } = await supabase
         .from('email_threads')
         .select('domain, counterparty_email, subject')
-        .eq('id', thread_id).single()
+        .eq('id', thread_id).maybeSingle()
 
     const { data: emails } = await supabase
         .from('emails')
@@ -77,7 +77,7 @@ Respond with valid JSON only:
 }`
 
     const claudeRes = await anthropic.messages.create({
-        model: 'claude-sonnet-4-5',
+        model: 'claude-opus-4-7',
         max_tokens: 2048,
         messages: [{ role: 'user', content: prompt }],
     })

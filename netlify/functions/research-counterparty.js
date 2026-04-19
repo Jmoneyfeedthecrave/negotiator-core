@@ -8,7 +8,7 @@
 
 import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY
 
 async function tavilySearch(query, maxResults = 5) {

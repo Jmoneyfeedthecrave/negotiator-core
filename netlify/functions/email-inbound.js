@@ -10,7 +10,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import mammoth from 'mammoth'
 import { NEGOTIATION_PLAYBOOK, TACTIC_DETECTION_GUIDE } from './negotiationPlaybook.js'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 // Process attachments — PDFs returned as base64 for Claude's native document API
@@ -55,9 +55,9 @@ async function fetchLearnedPatterns() {
     } catch { return [] }
 }
 
-function computeScheduledSendTime(domain, receivedAt, theirResponseDeltaMs, urgencyScore) {
+function computeScheduledSendTime(domain, receivedAt, theirResponseDeltaMs, urgencyScore, timezoneOffsetHours = -5) {
     const now = receivedAt ? new Date(receivedAt) : new Date()
-    // Domain-specific minimum wait (ms)
+    // Domain-specific minimum wait (hours)
     const domainMinHours = {
         'real estate': 4, 'realty': 4, 'mortgage': 4,
         'insurance': 4, 'carrier': 8, 'mga': 8, 'reinsurance': 24,
@@ -69,7 +69,7 @@ function computeScheduledSendTime(domain, receivedAt, theirResponseDeltaMs, urge
     const domainKey = Object.keys(domainMinHours).find(k => domain.toLowerCase().includes(k)) || 'general'
     const minHours = domainMinHours[domainKey] || 2
 
-    // If they were pushy (high urgency), wait longer
+    // If they were pushy (high urgency), wait longer to project calm confidence
     const urgencyMultiplier = urgencyScore > 0.7 ? 1.5 : 1.0
     const waitHours = Math.round(minHours * urgencyMultiplier)
 
@@ -77,17 +77,28 @@ function computeScheduledSendTime(domain, receivedAt, theirResponseDeltaMs, urge
     const theirWaitHours = theirResponseDeltaMs ? theirResponseDeltaMs / 3600000 : 0
     const finalWaitHours = Math.max(waitHours, theirWaitHours * 0.5)
 
-    // Compute send time and push into business hours (8am-5pm)
     let sendAt = new Date(now.getTime() + finalWaitHours * 3600000)
-    const hour = sendAt.getHours()
-    if (hour < 8) sendAt.setHours(10, 0, 0, 0)
-    else if (hour >= 17) { sendAt.setDate(sendAt.getDate() + 1); sendAt.setHours(10, 0, 0, 0) }
-    // Skip weekends
-    while (sendAt.getDay() === 0 || sendAt.getDay() === 6) { sendAt.setDate(sendAt.getDate() + 1) }
+
+    // MF-6: Netlify Functions run in UTC. Convert business hours (8am-5pm local) to UTC.
+    // timezoneOffsetHours: -5 = US Central, -8 = US Pacific, etc.
+    const businessStartUTC = 8 - timezoneOffsetHours   // 8am local → UTC
+    const businessEndUTC   = 17 - timezoneOffsetHours  // 5pm local → UTC
+
+    const hourUTC = sendAt.getUTCHours()
+    if (hourUTC < businessStartUTC) {
+        sendAt.setUTCHours(businessStartUTC + 2, 0, 0, 0) // push to 10am local
+    } else if (hourUTC >= businessEndUTC) {
+        sendAt.setUTCDate(sendAt.getUTCDate() + 1)
+        sendAt.setUTCHours(businessStartUTC + 2, 0, 0, 0) // next morning
+    }
+    // Skip weekends (UTC day)
+    while (sendAt.getUTCDay() === 0 || sendAt.getUTCDay() === 6) {
+        sendAt.setUTCDate(sendAt.getUTCDate() + 1)
+    }
     return { scheduledSendAt: sendAt.toISOString(), waitHours: Math.round(finalWaitHours) }
 }
 
-function buildEmailNegotiatorPrompt(threadHistory, inboundEmail, domain, textAttachments, learnedPatterns, counterpartyIntel, counterpartyProfile, threadState, emailMeta) {
+function buildEmailNegotiatorPrompt(threadHistory, inboundEmail, domain, textAttachments, learnedPatterns, counterpartyIntel, counterpartyProfile, threadState, emailMeta, ourPosition) {
     // ── Meta-signals block (Gap 7) ─────────────────────────────────────────
     const metaBlock = emailMeta ? `
 META-SIGNAL INTELLIGENCE:
@@ -147,6 +158,26 @@ Concessions THEY have made: ${threadState.concessions_they_made?.join('; ') || '
 Dimensions we have NOT moved on: ${threadState.no_move_dimensions?.join(', ') || 'None'}
 Thread observations: ${threadState.thread_observations?.slice(-5).join(' | ') || 'None yet'}
 ` : ''
+    // ── Our position block (DFB-7) — always injected when available ──────────
+    const ourPositionBlock = ourPosition ? `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUR NEGOTIATION POSITION — THIS IS WHAT WE WANT TO ACHIEVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Negotiation type: ${ourPosition.negotiation_type || 'General'}
+Primary goal: ${ourPosition.goal}
+Ideal outcome: ${ourPosition.ideal_outcome || 'Not specified'}
+Walk-away minimum: ${ourPosition.walkaway || 'Not specified'}
+Our BATNA: ${ourPosition.batna || 'Not specified'}
+Concessions we can offer: ${ourPosition.concessions_available || 'None identified'}
+Hard constraints: ${ourPosition.constraints || 'None specified'}
+Recommended tone: ${ourPosition.tone || 'collaborative'}
+CRITICAL: Your draft reply MUST serve this position. DO NOT offer terms below the walk-away minimum. DO NOT reveal our BATNA.
+` : `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUR POSITION: NOT YET SET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+No position has been confirmed for this thread yet. Draft a neutral, information-gathering reply that keeps all options open. Do NOT make any offers, commitments, or concessions.
+`
 
     // ── Thread history block ───────────────────────────────────────────────
     const historyBlock = threadHistory.length > 0
@@ -184,7 +215,7 @@ ${sections.join('\n\n')}
         }
     }
 
-    return `${intelBlock}${profileBlock}${stateBlock}${patternsBlock}${NEGOTIATION_PLAYBOOK}
+    return `${ourPositionBlock}${intelBlock}${profileBlock}${stateBlock}${patternsBlock}${NEGOTIATION_PLAYBOOK}
 
 ${TACTIC_DETECTION_GUIDE}
 
@@ -347,16 +378,19 @@ export const handler = async (event) => {
                 }
             }
 
-            // 2. Fallback: match by counterparty email + subject
+            // 2. Fallback: match by counterparty email + subject within a 90-day recency window
+            //    DFB-6: Without the date guard, two separate deals with the same person collapse into one thread.
             if (!threadId) {
                 const baseSubject = subject.replace(/^(re:|fwd?:)\s*/gi, '').trim()
+                const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
                 const { data: existing } = await supabase
                     .from('email_threads')
                     .select('id')
                     .eq('counterparty_email', counterpartyEmail)
                     .ilike('subject', `%${baseSubject}%`)
                     .eq('status', 'active')
-                    .order('created_at', { ascending: false })
+                    .gte('updated_at', ninetyDaysAgo)   // only consider recently active threads
+                    .order('updated_at', { ascending: false })
                     .limit(1)
                     .maybeSingle()
                 if (existing) threadId = existing.id
@@ -376,18 +410,20 @@ export const handler = async (event) => {
             }
         }
 
-        // Load thread record — including all intelligence columns
+        // Load thread record — including all intelligence columns and our position brief
         const { data: threadRecord } = await supabase
             .from('email_threads')
-            .select('mode, domain, counterparty_intel, counterparty_profile, thread_state')
+            .select('mode, domain, counterparty_intel, counterparty_profile, thread_state, our_position, position_confirmed')
             .eq('id', threadId)
-            .single()
+            .maybeSingle()
         const threadMode = threadRecord?.mode || mode
         const threadDomain = threadRecord?.domain || domain
         const counterpartyIntel = threadRecord?.counterparty_intel || {}
         const counterpartyProfile = threadRecord?.counterparty_profile || {}
         const threadState = threadRecord?.thread_state || {}
         const isFirstEmail = Object.keys(counterpartyIntel).length === 0
+        // DFB-7: Load our_position if it already exists (confirmed or unconfirmed)
+        let ourPosition = threadRecord?.our_position || null
 
         // Load thread history + all learned patterns in parallel
         const [{ data: threadEmails }, learnedPatterns] = await Promise.all([
@@ -405,10 +441,12 @@ export const handler = async (event) => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ thread_id: threadId, from_email: counterpartyEmail, from_name: '' }),
             }).catch(err => console.error('[research-counterparty] fire-and-forget failed:', err.message))
+        }
 
-            // Auto-draft our position brief from the first inbound email
-            // Claude reads the email and proposes what OUR goals probably should be
-            // Saved as position_confirmed=false so the UI shows a "confirm your position" card
+        // DFB-7: On first email with no our_position, generate the position brief BEFORE
+        // the main Claude analysis call so it can be included in the prompt.
+        // On subsequent emails, ourPosition is already loaded from the thread record above.
+        if (!ourPosition) {
             try {
                 const briefPrompt = `You are an expert negotiator reading an inbound email to figure out what the RECIPIENT (our client, not the sender) probably wants to achieve.
 
@@ -438,12 +476,11 @@ Return ONLY valid JSON:
 }`
 
                 const briefRes = await anthropic.messages.create({
-                    model: 'claude-haiku-4-5',
+                    model: 'claude-opus-4-7',
                     max_tokens: 800,
                     messages: [{ role: 'user', content: briefPrompt }],
                 })
 
-                let ourPosition = null
                 try {
                     const raw = briefRes.content[0]?.text || ''
                     const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
@@ -453,10 +490,11 @@ Return ONLY valid JSON:
                 }
 
                 if (ourPosition) {
+                    // Save inferred position — position_confirmed=false so UI shows confirm card
                     await supabase.from('email_threads')
                         .update({ our_position: ourPosition, position_confirmed: false })
                         .eq('id', threadId)
-                    console.log('[brief-draft] position brief saved for thread', threadId)
+                    console.log('[brief-draft] position inferred and saved for thread', threadId)
                 }
             } catch (briefErr) {
                 console.error('[brief-draft] failed:', briefErr.message)
@@ -487,10 +525,6 @@ Return ONLY valid JSON:
             ccChanges: 'not tracked via Postmark inbound',
         }
 
-        // Compute scheduled send timing
-        const urgencyScore = analysis.bluff_probability || 0.5  // will be recalculated after Claude, but pre-compute for timing
-        const { scheduledSendAt } = computeScheduledSendTime(threadDomain, new Date().toISOString(), responseTimeDeltaMs, urgencyScore)
-
         // Process attachments — PDFs go natively to Claude, DOCX/TXT extracted as text
         const allAttachments = await processAttachments(attachments)
         const pdfAttachments = allAttachments.filter(a => a.type === 'pdf')
@@ -498,9 +532,10 @@ Return ONLY valid JSON:
         const hasAttachments = allAttachments.length > 0
 
         // Run Claude negotiation analysis + draft reply
+        // DFB-7: ourPosition is now guaranteed to be available (inferred above if first email)
         const prompt = buildEmailNegotiatorPrompt(
             threadEmails || [], emailBodyClean, threadDomain, textAttachments, learnedPatterns,
-            counterpartyIntel, counterpartyProfile, threadState, emailMeta
+            counterpartyIntel, counterpartyProfile, threadState, emailMeta, ourPosition
         )
 
         // Build message content — PDFs passed as native Claude document blocks
@@ -517,7 +552,7 @@ Return ONLY valid JSON:
         ]
 
         const claudeRes = await anthropic.messages.create({
-            model: 'claude-sonnet-4-5',
+            model: 'claude-opus-4-7',
             max_tokens: hasAttachments ? 6000 : 3000,
             messages: [{ role: 'user', content: userContent }],
         })
@@ -537,23 +572,41 @@ Return ONLY valid JSON:
             threadDomain, new Date().toISOString(), responseTimeDeltaMs, actualUrgencyScore
         )
 
+        // Save the inbound email record — direction:'inbound', no send_status
+        const ourEmail = process.env.GMAIL_USER || process.env.FROM_EMAIL
         const { data: savedEmail } = await supabase
             .from('emails')
             .insert({
                 thread_id: threadId,
                 direction: 'inbound',
                 from_email: counterpartyEmail,
-                to_email: toEmail || 'jdquist2025@gmail.com',
+                to_email: toEmail || ourEmail,
                 subject,
                 body: emailBodyClean,
                 message_id: messageId || null,
                 claude_analysis: analysis,
-                drafted_reply: analysis.drafted_reply || '',
-                status: 'pending',
-                scheduled_send_at: finalScheduledSendAt,
-                send_status: 'scheduled',
+                status: 'received',
             })
-            .select().single()
+            .select().maybeSingle()
+
+        // Insert a separate outbound row for the drafted reply — this is what the scheduler sends
+        const { data: replyEmail } = await supabase
+            .from('emails')
+            .insert({
+                thread_id: threadId,
+                direction: 'outbound',
+                from_email: ourEmail,
+                to_email: counterpartyEmail,
+                subject: subject.startsWith('Re:') ? subject : `Re: ${subject}`,
+                body: '',                              // outbound body set when sent
+                drafted_reply: analysis.drafted_reply || '',
+                status: 'pending_approval',
+                scheduled_send_at: finalScheduledSendAt,
+                send_status: threadMode === 'autonomous' ? 'scheduled' : 'pending_approval',
+                // Thread reply headers so email clients show proper threading
+                ...(messageId && { in_reply_to: messageId }),
+            })
+            .select().maybeSingle()
 
         // Persist counterparty profile + thread state updates from this analysis
         const profileUpdate = analysis.counterparty_profile_update
@@ -643,18 +696,22 @@ Return ONLY valid JSON:
                     .from('email_threads')
                     .update({ mode: 'coached', updated_at: new Date().toISOString() })
                     .eq('id', threadId)
-                // Update email status to flag for review
-                await supabase
-                    .from('emails')
-                    .update({ status: `paused:${blockReason}` })
-                    .eq('id', savedEmail.id)
+                // Update the reply row status to flag for review
+                if (replyEmail?.id) {
+                    await supabase
+                        .from('emails')
+                        .update({ send_status: `paused:${blockReason}`, status: `paused:${blockReason}` })
+                        .eq('id', replyEmail.id)
+                }
             } else {
-                // All clear — auto-send
-                await fetch(`${process.env.URL}/.netlify/functions/email-send`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email_id: savedEmail.id }),
-                }).catch(() => { })
+                // All clear — immediate send via email-send function
+                if (replyEmail?.id) {
+                    fetch(`${process.env.URL}/.netlify/functions/email-send`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email_id: replyEmail.id }),
+                    }).catch(err => console.error('[autonomous-send] failed:', err.message))
+                }
             }
         }
 
@@ -663,10 +720,12 @@ Return ONLY valid JSON:
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 thread_id: threadId,
-                email_id: savedEmail.id,
+                inbound_email_id: savedEmail?.id,
+                reply_email_id: replyEmail?.id,
                 technique_detected: analysis.technique_detected,
                 drafted_reply: analysis.drafted_reply,
                 status: threadMode === 'autonomous' ? 'auto_sent' : 'pending_review',
+                scheduled_send_at: finalScheduledSendAt,
             }),
         }
     } catch (err) {

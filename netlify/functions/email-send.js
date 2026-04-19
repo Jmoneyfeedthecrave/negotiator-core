@@ -9,13 +9,13 @@
 import { createClient } from '@supabase/supabase-js'
 import nodemailer from 'nodemailer'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
 
 function getTransporter() {
     return nodemailer.createTransport({
         service: 'gmail',
         auth: {
-            user: process.env.GMAIL_USER || 'jdquist2025@gmail.com',
+            user: process.env.GMAIL_USER || process.env.FROM_EMAIL,
             pass: process.env.GMAIL_APP_PASSWORD,
         },
     })
@@ -39,7 +39,7 @@ export const handler = async (event) => {
             .from('emails')
             .select('*, email_threads(*)')
             .eq('id', email_id)
-            .single()
+            .maybeSingle()
 
         if (emailErr || !email) throw new Error('Email not found')
         if (email.status === 'sent') return { statusCode: 200, body: JSON.stringify({ message: 'Already sent' }) }
@@ -48,9 +48,10 @@ export const handler = async (event) => {
         if (!replyText) throw new Error('No reply text available')
 
         const thread = email.email_threads
-        const toEmail = email.from_email || thread?.counterparty_email
+        // For outbound rows: to_email is the counterparty. For inbound rows: from_email is the counterparty.
+        const toEmail = email.direction === 'outbound' ? email.to_email : (email.from_email || thread?.counterparty_email)
         const subject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || thread?.subject}`
-        const ourEmail = process.env.GMAIL_USER || 'jdquist2025@gmail.com'
+        const ourEmail = process.env.GMAIL_USER || process.env.FROM_EMAIL
 
         // Postmark inbound address — counterparty replies go here automatically
         const postmarkInbound = process.env.POSTMARK_INBOUND_ADDRESS
@@ -74,21 +75,18 @@ export const handler = async (event) => {
 
         const sentMessageId = info.messageId
 
-        // Save outbound record with our Message-ID for future threading
-        await supabase.from('emails').insert({
-            thread_id: email.thread_id,
-            direction: 'outbound',
-            from_email: ourEmail,
-            to_email: toEmail,
-            subject,
-            body: replyText,
+        // Mark this outbound row as sent (it was already created by email-inbound or initiate-negotiation)
+        await supabase.from('emails').update({
             status: 'sent',
+            send_status: 'sent',
+            body: replyText,          // populate the body now that it's confirmed sent
             sent_at: new Date().toISOString(),
-            message_id: sentMessageId,
-        })
+            message_id: sentMessageId, // store our outbound Message-ID for future reply threading
+        }).eq('id', email_id)
 
-        await supabase.from('emails').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', email_id)
-        await supabase.from('email_threads').update({ updated_at: new Date().toISOString() }).eq('id', email.thread_id)
+        await supabase.from('email_threads')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', email.thread_id)
 
         return {
             statusCode: 200,

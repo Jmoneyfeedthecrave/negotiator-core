@@ -26,7 +26,7 @@
 import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY)
+const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 // ── Inline PERSONAS (Netlify functions cannot import from src/) ────────────────
@@ -116,8 +116,8 @@ export const handler = async (event) => {
         opening_offer = 120,
     } = body
 
-    // Hard cap — Netlify functions timeout at 26-30s; 2 Claude calls × 2 turns ≈ 10s max
-    const max_turns = Math.min(Number(rawMaxTurns) || 2, 2)
+    // Cap at 10 turns — Netlify functions timeout at ~26s; Opus 4.7 is faster than older models
+    const max_turns = Math.min(Number(rawMaxTurns) || 6, 10)
 
     const persona = getPersona(persona_id)
 
@@ -161,7 +161,7 @@ export const handler = async (event) => {
             // ── Instance B responds (counterparty persona) ─────────────────────────
             const bSystemPrompt = buildCounterpartyBPrompt(persona, domain, target_value * 0.85)
             const bResponse = await anthropic.messages.create({
-                model: 'claude-sonnet-4-5',
+                model: 'claude-opus-4-7',
                 max_tokens: 512,
                 system: bSystemPrompt,
                 messages: conversationB,
@@ -188,7 +188,7 @@ export const handler = async (event) => {
             // ── Instance A responds (our negotiator) ───────────────────────────────
             const aSystemPrompt = buildNegotiatorAPrompt(domain, batna_value, target_value, opening_offer, techniques || [], transcript)
             const aResponse = await anthropic.messages.create({
-                model: 'claude-sonnet-4-5',
+                model: 'claude-opus-4-7',
                 max_tokens: 512,
                 system: aSystemPrompt,
                 messages: conversationA,
@@ -236,7 +236,17 @@ export const handler = async (event) => {
             transcript,
             outcome,
             win_vs_target: winVsTarget,
+            status: 'completed',
         }).eq('id', sessionId)
+
+        // MF-4: Auto-trigger post-game-analysis so the learning loop runs without manual action
+        if (process.env.URL) {
+            fetch(`${process.env.URL}/.netlify/functions/post-game-analysis`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId }),
+            }).catch(err => console.error('[simulate] post-game-analysis trigger failed:', err.message))
+        }
 
         return {
             statusCode: 200,
