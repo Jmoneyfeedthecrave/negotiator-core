@@ -13,6 +13,28 @@ import { NEGOTIATION_PLAYBOOK, TACTIC_DETECTION_GUIDE } from './negotiationPlayb
 const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
+const MODEL = process.env.CLAUDE_MODEL || 'claude-opus-4-8'
+
+// Resolve the deployed site URL for internal function calls.
+// Netlify auto-populates URL/DEPLOY_PRIME_URL in production; fall back to the known prod host.
+// IMPORTANT: do NOT set URL yourself in the Netlify env — let Netlify provide it, or this points at localhost.
+const SITE_URL = process.env.URL || process.env.DEPLOY_PRIME_URL || 'https://negotiator-core.netlify.app'
+
+// Robust JSON extraction: handles fenced ```json blocks, raw JSON, and
+// truncated/preamble-wrapped output by brace-matching from first { to last }.
+function extractJSON(raw) {
+    if (!raw) return null
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
+    const candidate = (fenced ? fenced[1] : raw).trim()
+    try { return JSON.parse(candidate) } catch { /* fall through */ }
+    const start = candidate.indexOf('{')
+    const end = candidate.lastIndexOf('}')
+    if (start !== -1 && end > start) {
+        try { return JSON.parse(candidate.slice(start, end + 1)) } catch { /* fall through */ }
+    }
+    return null
+}
+
 // Process attachments — PDFs returned as base64 for Claude's native document API
 // DOCX/TXT extracted as plain text
 async function processAttachments(attachments) {
@@ -343,15 +365,16 @@ export const handler = async (event) => {
         MessageID: messageId = '',
         InReplyTo: inReplyTo = '',
         Headers: headers = [],
-        // Also support manual submissions from the UI
+        // Also support manual submissions from the UI + poll-gmail pre-inserted rows
         thread_id: existingThreadId = null,
+        existing_email_id: existingEmailId = null,
         domain = 'Email Negotiation',
         mode = 'coached',
         Attachments: attachments = [],
     } = payload
 
-    // Also check References header from Postmark's Headers array
-    const referencesHeader = headers.find?.(h => h.Name === 'References')?.Value || ''
+    // References may arrive top-level (from poll-gmail) or inside the Headers array (raw webhook)
+    const referencesHeader = payload.References || headers.find?.(h => h.Name === 'References')?.Value || ''
 
     if (!fromEmail && !payload.from_email) {
         return { statusCode: 400, body: JSON.stringify({ error: 'from_email is required' }) }
@@ -428,7 +451,7 @@ export const handler = async (event) => {
         // Load thread history + all learned patterns in parallel
         const [{ data: threadEmails }, learnedPatterns] = await Promise.all([
             supabase.from('emails')
-                .select('direction, body, claude_analysis, created_at')
+                .select('id, direction, body, claude_analysis, created_at')
                 .eq('thread_id', threadId)
                 .order('created_at', { ascending: true }),
             fetchLearnedPatterns(),
@@ -436,7 +459,7 @@ export const handler = async (event) => {
 
         // Trigger counterparty research on first email (fire-and-forget, non-blocking)
         if (isFirstEmail && counterpartyEmail) {
-            fetch(`${process.env.URL}/.netlify/functions/research-counterparty`, {
+            fetch(`${SITE_URL}/.netlify/functions/research-counterparty`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ thread_id: threadId, from_email: counterpartyEmail, from_name: '' }),
@@ -476,18 +499,13 @@ Return ONLY valid JSON:
 }`
 
                 const briefRes = await anthropic.messages.create({
-                    model: 'claude-opus-4-7',
-                    max_tokens: 800,
+                    model: MODEL,
+                    max_tokens: 1200,
                     messages: [{ role: 'user', content: briefPrompt }],
                 })
 
-                try {
-                    const raw = briefRes.content[0]?.text || ''
-                    const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
-                    ourPosition = JSON.parse(match ? match[1].trim() : raw.trim())
-                } catch {
-                    console.error('[brief-draft] JSON parse failed')
-                }
+                ourPosition = extractJSON(briefRes.content?.[0]?.text || '')
+                if (!ourPosition) console.error('[brief-draft] JSON parse failed')
 
                 if (ourPosition) {
                     // Save inferred position — position_confirmed=false so UI shows confirm card
@@ -533,8 +551,13 @@ Return ONLY valid JSON:
 
         // Run Claude negotiation analysis + draft reply
         // DFB-7: ourPosition is now guaranteed to be available (inferred above if first email)
+        // Rolling context: drop the current inbound (passed separately as the latest message) and
+        // cap history to the last 8 exchanges so a long thread can't blow the token budget.
+        const historyForPrompt = (threadEmails || [])
+            .filter(e => e.id !== existingEmailId)
+            .slice(-8)
         const prompt = buildEmailNegotiatorPrompt(
-            threadEmails || [], emailBodyClean, threadDomain, textAttachments, learnedPatterns,
+            historyForPrompt, emailBodyClean, threadDomain, textAttachments, learnedPatterns,
             counterpartyIntel, counterpartyProfile, threadState, emailMeta, ourPosition
         )
 
@@ -552,18 +575,18 @@ Return ONLY valid JSON:
         ]
 
         const claudeRes = await anthropic.messages.create({
-            model: 'claude-opus-4-7',
-            max_tokens: hasAttachments ? 6000 : 3000,
+            model: MODEL,
+            max_tokens: hasAttachments ? 10000 : 8000,
             messages: [{ role: 'user', content: userContent }],
         })
 
-        let analysis = {}
-        try {
-            const raw = claudeRes.content[0]?.text || ''
-            const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
-            analysis = JSON.parse(match ? match[1].trim() : raw.trim())
-        } catch {
-            analysis = { drafted_reply: claudeRes.content[0]?.text || '', technique_detected: 'unknown' }
+        // Robust JSON extraction. The old 3000-token cap truncated this large schema mid-object,
+        // JSON.parse threw, and the catch shoved the half-finished JSON string into drafted_reply.
+        const rawClaude = claudeRes.content?.[0]?.text || ''
+        let analysis = extractJSON(rawClaude)
+        if (!analysis) {
+            console.error('[email-inbound] analysis JSON parse failed — using raw text as reply')
+            analysis = { drafted_reply: rawClaude, technique_detected: 'unknown' }
         }
 
         // Compute scheduled send time using actual bluff_probability from Claude
@@ -572,22 +595,34 @@ Return ONLY valid JSON:
             threadDomain, new Date().toISOString(), responseTimeDeltaMs, actualUrgencyScore
         )
 
-        // Save the inbound email record — direction:'inbound', no send_status
+        // Persist the inbound email + its analysis.
+        // If poll-gmail already inserted this row (existingEmailId), UPDATE it rather than insert a
+        // second copy. The duplicate insert was poisoning thread history and tripping the autonomous
+        // duplicate-detector against the agent's own copy of the message.
         const ourEmail = process.env.GMAIL_USER || process.env.FROM_EMAIL
-        const { data: savedEmail } = await supabase
-            .from('emails')
-            .insert({
-                thread_id: threadId,
-                direction: 'inbound',
-                from_email: counterpartyEmail,
-                to_email: toEmail || ourEmail,
-                subject,
-                body: emailBodyClean,
-                message_id: messageId || null,
-                claude_analysis: analysis,
-                status: 'received',
-            })
-            .select().maybeSingle()
+        let inboundEmailId = existingEmailId
+        if (existingEmailId) {
+            await supabase
+                .from('emails')
+                .update({ claude_analysis: analysis, status: 'received' })
+                .eq('id', existingEmailId)
+        } else {
+            const { data: savedEmail } = await supabase
+                .from('emails')
+                .insert({
+                    thread_id: threadId,
+                    direction: 'inbound',
+                    from_email: counterpartyEmail,
+                    to_email: toEmail || ourEmail,
+                    subject,
+                    body: emailBodyClean,
+                    message_id: messageId || null,
+                    claude_analysis: analysis,
+                    status: 'received',
+                })
+                .select().maybeSingle()
+            inboundEmailId = savedEmail?.id
+        }
 
         // Insert a separate outbound row for the drafted reply — this is what the scheduler sends
         const { data: replyEmail } = await supabase
@@ -647,9 +682,10 @@ Return ONLY valid JSON:
             let blocked = false
             let blockReason = ''
 
-            // 1. DUPLICATE DETECTION — don't reply to the same message twice
+            // 1. DUPLICATE DETECTION — don't reply to the same message twice.
+            //    Exclude the message we're currently processing so we never match our own copy.
             const recentInbound = (threadEmails || [])
-                .filter(e => e.direction === 'inbound')
+                .filter(e => e.direction === 'inbound' && e.id !== inboundEmailId)
                 .slice(-5)
             const isDuplicate = recentInbound.some(e =>
                 e.body?.trim().toLowerCase() === emailBodyClean.trim().toLowerCase()
@@ -677,7 +713,7 @@ Return ONLY valid JSON:
             // 3. STALL DETECTION — last 3 inbound messages are identical = stuck loop
             if (!blocked) {
                 const lastThreeInbound = (threadEmails || [])
-                    .filter(e => e.direction === 'inbound')
+                    .filter(e => e.direction === 'inbound' && e.id !== inboundEmailId)
                     .slice(-3)
                 if (lastThreeInbound.length === 3) {
                     const bodies = lastThreeInbound.map(e => e.body?.trim().toLowerCase())
@@ -704,14 +740,11 @@ Return ONLY valid JSON:
                         .eq('id', replyEmail.id)
                 }
             } else {
-                // All clear — immediate send via email-send function
-                if (replyEmail?.id) {
-                    fetch(`${process.env.URL}/.netlify/functions/email-send`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email_id: replyEmail.id }),
-                    }).catch(err => console.error('[autonomous-send] failed:', err.message))
-                }
+                // All clear. The reply row is already send_status:'scheduled' with a scheduled_send_at,
+                // and the send-scheduled cron is the single sender. We deliberately do NOT fire
+                // email-send here — that immediate-send-plus-later-cron-send was the double-send race,
+                // and skipping it lets the timing engine actually take effect.
+                console.log(`[autonomous] thread=${threadId} reply=${replyEmail?.id} scheduled for ${finalScheduledSendAt}`)
             }
         }
 
@@ -720,7 +753,7 @@ Return ONLY valid JSON:
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 thread_id: threadId,
-                inbound_email_id: savedEmail?.id,
+                inbound_email_id: inboundEmailId,
                 reply_email_id: replyEmail?.id,
                 technique_detected: analysis.technique_detected,
                 drafted_reply: analysis.drafted_reply,

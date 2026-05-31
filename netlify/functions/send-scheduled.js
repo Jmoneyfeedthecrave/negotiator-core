@@ -1,52 +1,60 @@
 /**
  * Netlify Scheduled Function: send-scheduled
- * Runs every 15 minutes via Netlify Cron
- * Checks for emails with send_status='scheduled' and scheduled_send_at <= NOW()
- * Sends them via Postmark and marks them as sent.
+ * Runs on a cron (see netlify.toml). Two jobs, in order:
+ *   1. INGEST  — trigger poll-gmail to pull any new counterparty replies into the DB.
+ *   2. SEND     — find outbound replies whose scheduled_send_at has passed and send them.
  *
- * ARCH-4: Uses optimistic row-locking via a status transition to 'sending'
- * before dispatch so concurrent cron runs don't double-send the same email.
+ * Gmail-only architecture: everything sends through Gmail SMTP (same transport as email-send),
+ * Reply-To is our Gmail, and replies are ingested by poll-gmail. No Postmark anywhere.
+ *
+ * Double-send safety: emails are claimed atomically by flipping send_status 'scheduled' -> 'sending'
+ * before dispatch, so two overlapping cron runs can't grab the same row.
  */
 
 import { createClient } from '@supabase/supabase-js'
+import nodemailer from 'nodemailer'
 
-const supabase = createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY)
-const POSTMARK_SERVER_TOKEN = process.env.POSTMARK_SERVER_TOKEN
+const supabase = createClient(
+    process.env.VITE_SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
+)
 
-async function sendViaPostmark(email) {
-    const res = await fetch('https://api.postmarkapp.com/email', {
-        method: 'POST',
-        headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'X-Postmark-Server-Token': POSTMARK_SERVER_TOKEN,
+function resolveSiteUrl() {
+    return process.env.URL || process.env.DEPLOY_PRIME_URL || 'https://negotiator-core.netlify.app'
+}
+
+function getTransporter() {
+    return nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+            user: process.env.GMAIL_USER || process.env.FROM_EMAIL,
+            pass: process.env.GMAIL_APP_PASSWORD,
         },
-        body: JSON.stringify({
-            From: email.from_email || process.env.POSTMARK_FROM_EMAIL || process.env.GMAIL_USER,
-            To: email.to_email,
-            Subject: email.subject,
-            TextBody: email.drafted_reply || email.body,
-            ReplyTo: process.env.POSTMARK_INBOUND_ADDRESS || email.from_email,
-            // Preserve email threading
-            ...(email.in_reply_to && {
-                Headers: [
-                    { Name: 'In-Reply-To', Value: email.in_reply_to },
-                    { Name: 'References', Value: email.in_reply_to },
-                ]
-            }),
-        })
     })
-    const data = await res.json()
-    if (!res.ok) throw new Error(`Postmark error: ${data.Message || res.status}`)
-    return data
+}
+
+// ── Job 1: pull new replies in. poll-gmail pre-inserts each reply and queues Claude analysis. ──
+async function ingestReplies() {
+    try {
+        const res = await fetch(`${resolveSiteUrl()}/.netlify/functions/poll-gmail`, { method: 'GET' })
+        const data = await res.json().catch(() => ({}))
+        console.log(`[send-scheduled] poll-gmail processed=${data.processed ?? '?'}`)
+    } catch (err) {
+        console.error('[send-scheduled] poll-gmail trigger failed:', err.message)
+    }
 }
 
 export const handler = async () => {
+    // 1. Ingest first so a reply that arrived this cycle can also be drafted this cycle
+    //    (the actual send of that draft happens on the next cycle once analysis completes).
+    await ingestReplies()
+
     const now = new Date().toISOString()
     const runId = `run_${Date.now()}`
 
-    // ARCH-4: Claim emails atomically by transitioning status 'scheduled' → 'sending'
-    // This prevents two concurrent cron runs from processing the same rows.
+    // 2. Claim due outbound emails atomically: 'scheduled' -> 'sending'. Only rows whose
+    //    scheduled_send_at has passed are eligible. Coached drafts sit at 'pending_approval'
+    //    and are never claimed here — they go out via email-send when the human approves.
     const { data: claimed, error: claimError } = await supabase
         .from('emails')
         .update({ send_status: 'sending', claimed_by: runId })
@@ -61,24 +69,45 @@ export const handler = async () => {
     }
 
     if (!claimed || claimed.length === 0) {
-        console.log('[send-scheduled] No emails due')
         return { statusCode: 200, body: JSON.stringify({ sent: 0 }) }
     }
 
     console.log(`[send-scheduled] ${runId} claimed ${claimed.length} emails`)
 
+    const ourEmail = process.env.GMAIL_USER || process.env.FROM_EMAIL
+    const transporter = getTransporter()
     const results = []
+
     for (const email of claimed) {
         try {
-            const postmarkResult = await sendViaPostmark(email)
+            const replyText = email.drafted_reply || email.body
+            if (!replyText) throw new Error('No reply text to send')
+
+            const parentMessageId = email.in_reply_to // counterparty's last message-id, for threading
+            const subject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
+
+            const info = await transporter.sendMail({
+                from: `"AI Negotiator" <${ourEmail}>`,
+                to: email.to_email,
+                subject,
+                text: replyText,
+                replyTo: ourEmail,
+                ...(parentMessageId && {
+                    headers: {
+                        'In-Reply-To': parentMessageId,
+                        'References': parentMessageId,
+                    },
+                }),
+            })
+
             await supabase
                 .from('emails')
                 .update({
                     send_status: 'sent',
                     status: 'sent',
                     sent_at: new Date().toISOString(),
-                    message_id: postmarkResult.MessageID || null,
-                    body: email.drafted_reply || email.body,  // materialise body once sent
+                    message_id: info.messageId || null, // our outbound id — matches their next reply to this thread
+                    body: replyText,                    // materialise body once actually sent
                 })
                 .eq('id', email.id)
 
@@ -87,16 +116,21 @@ export const handler = async () => {
                 .eq('id', email.thread_id)
 
             results.push({ id: email.id, status: 'sent' })
-            console.log(`[send-scheduled] Sent email ${email.id}`)
+            console.log(`[send-scheduled] sent email ${email.id}`)
         } catch (err) {
-            console.error(`[send-scheduled] Failed to send ${email.id}:`, err.message)
+            console.error(`[send-scheduled] failed to send ${email.id}:`, err.message)
+            // Release the claim so a later run can retry instead of leaving it stuck in 'sending'.
             await supabase
                 .from('emails')
-                .update({ send_status: 'failed', claimed_by: null })
+                .update({ send_status: 'scheduled', claimed_by: null })
                 .eq('id', email.id)
             results.push({ id: email.id, status: 'failed', error: err.message })
         }
     }
 
-    return { statusCode: 200, body: JSON.stringify({ sent: results.filter(r => r.status === 'sent').length, results }) }
+    return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sent: results.filter(r => r.status === 'sent').length, results }),
+    }
 }

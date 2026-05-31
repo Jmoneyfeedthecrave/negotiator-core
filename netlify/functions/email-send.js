@@ -2,8 +2,8 @@
  * Netlify Function: email-send
  * POST /api/email-send
  * Body: { email_id: string, custom_reply?: string }
- * Sends reply via Gmail SMTP. Sets Reply-To to Postmark inbound so
- * counterparty replies automatically route back to our webhook.
+ * Sends reply via Gmail SMTP with Reply-To = our Gmail, so the counterparty's
+ * reply lands back in our inbox where poll-gmail ingests it. Used for coached/approved sends.
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -53,8 +53,10 @@ export const handler = async (event) => {
         const subject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || thread?.subject}`
         const ourEmail = process.env.GMAIL_USER || process.env.FROM_EMAIL
 
-        // Postmark inbound address — counterparty replies go here automatically
-        const postmarkInbound = process.env.POSTMARK_INBOUND_ADDRESS
+        // Gmail-only loop: send from our Gmail with Reply-To = our Gmail so the counterparty's
+        // reply lands back in the inbox poll-gmail watches. Thread against THEIR last message-id
+        // (stored as in_reply_to on this outbound row) so their client groups the conversation.
+        const parentMessageId = email.in_reply_to || email.message_id
 
         const transporter = getTransporter()
         const info = await transporter.sendMail({
@@ -62,13 +64,11 @@ export const handler = async (event) => {
             to: toEmail,
             subject,
             text: replyText,
-            // KEY: Reply-To routes counterparty's reply to Postmark → our webhook
-            ...(postmarkInbound && { replyTo: postmarkInbound }),
-            // Email threading headers so email clients show a proper thread
-            ...(email.message_id && {
+            replyTo: ourEmail,
+            ...(parentMessageId && {
                 headers: {
-                    'In-Reply-To': email.message_id,
-                    'References': email.message_id,
+                    'In-Reply-To': parentMessageId,
+                    'References': parentMessageId,
                 }
             }),
         })
@@ -91,7 +91,7 @@ export const handler = async (event) => {
         return {
             statusCode: 200,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ success: true, sent_to: toEmail, reply_to: postmarkInbound || '(not set)' }),
+            body: JSON.stringify({ success: true, sent_to: toEmail, reply_to: ourEmail }),
         }
     } catch (err) {
         console.error('[email-send]', err)
