@@ -1,44 +1,75 @@
 /**
- * Netlify Function: negotiate
- * POST /api/negotiate
+ * Netlify Background Function: negotiate-background
+ * POST /api/negotiate-background
+ *
+ * IMPORTANT: the "-background" filename suffix is what makes Netlify run this
+ * as a background function. Do not rename it without keeping the suffix.
+ *
  * Body: {
+ *   turn_id: string (uuid, generated client-side),
  *   session_id: string,
  *   counterparty_message: string,
  *   mode: 'coached' | 'autonomous',
  *   concession_flag?: object
  * }
  *
- * Full pipeline:
- * 1. Load world model + config + technique_library from Supabase
- * 2. BATNA hard check (block if breached)
- * 3. Build dynamic system prompt (with technique library + world model + concession flag)
- * 4. Call Claude API — receives structured JSON response
- * 5. Parse and validate Claude JSON response
- * 6. Update world model in Supabase (offer, beliefs, bluff_tracker, turn_history)
- * 7. Update session transcript
- * 8. Return structured result to frontend
+ * Netlify immediately returns 202 to the caller; this handler keeps running
+ * (up to 15 min). Progress and the final result are written to the
+ * negotiation_turns table, which the frontend polls via /api/turn-status.
+ *
+ * Fixes applied vs. the old negotiate.js:
+ *  FIX-1  No more synchronous-timeout death: runs as a background function.
+ *  FIX-2  Model switched to claude-sonnet-4-6 (much faster, structured-output friendly).
+ *  FIX-3  Text block extracted by type, not position (thinking blocks broke content[0].text).
+ *  FIX-4  Transcript no longer replayed as prose assistant turns (it contradicted the
+ *         JSON-only contract and duplicated turn_history already in the system prompt).
+ *         Recent dialogue is included as plain text inside the single user message.
+ *  FIX-5  Concession accounting now uses consistent units (percent of opening offer),
+ *         instead of subtracting dollars from a percentage.
+ *  FIX-6  BATNA is now gated AFTER generation against Claude's proposed updated_offer,
+ *         before anything is persisted — not a stale check of our own previous offer.
  */
 
 import { createClient } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
 
-// ── Inline engine helpers (Netlify functions cannot import from src/) ─────────
+const supabase = createClient(
+    process.env.VITE_SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
+)
 
-function checkBATNA(currentOffer, batnaValue, batnaDescription = '', perspective = 'seller') {
-    const offerValue = typeof currentOffer?.value === 'number' ? currentOffer.value : null
-    if (offerValue === null) return { breached: false, reason: null }
+const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
-    const breached =
-        perspective === 'seller' ? offerValue < batnaValue : offerValue > batnaValue
+const MODEL = 'claude-sonnet-4-6'
+const MAX_TOKENS = 2500
+const HISTORY_TURNS_IN_PROMPT = 10   // cap world-model history in the system prompt
+const DIALOGUE_TURNS_IN_MESSAGE = 6  // cap recent dialogue lines in the user message
 
-    if (breached) {
-        return {
-            breached: true,
-            reason: `BATNA HARD STOP: Current offer of ${offerValue} breaches the BATNA floor of ${batnaValue}${batnaDescription ? ` (${batnaDescription})` : ''}. Claude API call blocked.`,
-        }
-    }
-    return { breached: false, reason: null }
+// ── Turn status helpers ───────────────────────────────────────────────────────
+
+async function setTurnStatus(turnId, sessionId, fields) {
+    const { error } = await supabase
+        .from('negotiation_turns')
+        .upsert(
+            {
+                id: turnId,
+                session_id: sessionId,
+                updated_at: new Date().toISOString(),
+                ...fields,
+            },
+            { onConflict: 'id' }
+        )
+    if (error) console.error('[negotiate-background] turn status write failed:', error)
 }
+
+// ── BATNA gate (post-generation) ──────────────────────────────────────────────
+
+function offerBreachesBATNA(offerValue, batnaValue, perspective) {
+    if (typeof offerValue !== 'number' || !batnaValue || batnaValue <= 0) return false
+    return perspective === 'seller' ? offerValue < batnaValue : offerValue > batnaValue
+}
+
+// ── System prompt ─────────────────────────────────────────────────────────────
 
 function buildSystemPrompt({ worldModel, config, techniques, concessionFlag, mode }) {
     const {
@@ -60,21 +91,32 @@ function buildSystemPrompt({ worldModel, config, techniques, concessionFlag, mod
         weights,
     } = config
 
-    const techniqueBlock = techniques
+    const techniqueBlock = (techniques || [])
         .map(
             (t) =>
-                `[${t.category.toUpperCase()}] ${t.technique_name}
+                `[${(t.category || 'general').toUpperCase()}] ${t.technique_name}
   Description: ${t.description}
   When to apply: ${t.application_context || 'See description.'}
   Counter: ${t.counter_technique || 'N/A'}`
         )
         .join('\n\n')
 
+    // FIX-4 (part): compact, capped history instead of the full raw dump
+    const recentHistory = (turn_history || [])
+        .slice(-HISTORY_TURNS_IN_PROMPT)
+        .map((t) => ({
+            turn: t.turn,
+            counterparty_said: t.counterparty_message,
+            our_move: t.move,
+            our_offer: t.our_offer,
+            we_said: t.natural_language_response,
+        }))
+
     const worldModelBlock = `
 CURRENT NEGOTIATION STATE:
 - Domain: ${domain_label}
 - Our current offer: ${JSON.stringify(current_offer)}
-- Concession budget remaining: ${concession_remaining}% of ${concession_budget}% total
+- Concession budget remaining: ${concession_remaining}% (of an original ${concession_budget}% budget, measured against our opening offer)
 - BATNA value: ${batna_value} (${batna_description || 'Do not accept below this under any circumstances'})
 - Opening strategy: ${opening_strategy || 'anchoring'}
 - Red lines (hard stops): ${JSON.stringify(red_lines)}
@@ -82,7 +124,7 @@ CURRENT NEGOTIATION STATE:
 - Domain weights: ${JSON.stringify(weights)}
 - Counterparty belief model: ${JSON.stringify(counterparty_beliefs)}
 - Active bluff tracker: ${JSON.stringify(bluff_tracker)}
-- Full turn history: ${JSON.stringify(turn_history)}
+- Recent turn history (last ${HISTORY_TURNS_IN_PROMPT}): ${JSON.stringify(recentHistory)}
 `.trim()
 
     const concessionWarningBlock =
@@ -95,7 +137,7 @@ CURRENT NEGOTIATION STATE:
 
     const outputFormatBlock = `
 OUTPUT FORMAT — CRITICAL:
-Respond with ONLY valid JSON, no prose before or after:
+Respond with ONLY valid JSON, no prose before or after, no markdown fences:
 
 {
   "internal_reasoning": "Step-by-step strategic thinking including Nash Equilibrium analysis, EV calculation, and range analysis.",
@@ -150,33 +192,25 @@ ${outputFormatBlock}
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 
-const supabase = createClient(
-    process.env.VITE_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
-)
-
-const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
-
 export const handler = async (event) => {
-    if (event.httpMethod !== 'POST') {
-        return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) }
-    }
-
+    // Netlify has already returned 202 to the client by the time this runs.
     let body
     try {
         body = JSON.parse(event.body)
     } catch {
-        return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON body' }) }
+        console.error('[negotiate-background] Invalid JSON body')
+        return
     }
 
-    const { session_id, counterparty_message, mode = 'coached', concession_flag } = body
+    const { turn_id, session_id, counterparty_message, mode = 'coached', concession_flag } = body
 
-    if (!session_id || !counterparty_message) {
-        return {
-            statusCode: 400,
-            body: JSON.stringify({ error: 'session_id and counterparty_message are required' }),
-        }
+    if (!turn_id || !session_id || !counterparty_message) {
+        console.error('[negotiate-background] turn_id, session_id and counterparty_message are required')
+        return
     }
+
+    // Mark turn as processing immediately so polling has something to find.
+    await setTurnStatus(turn_id, session_id, { status: 'processing', result: null, error: null })
 
     try {
         // ── 1. Load world model ──────────────────────────────────────────────────
@@ -201,51 +235,31 @@ export const handler = async (event) => {
         if (sessionError) throw new Error(`Session fetch failed: ${sessionError.message}`)
         if (!session) throw new Error(`Session not found: ${session_id}`)
 
-        // Use config_snapshot if no live config stored, else load from configs table
         let config = session.config_snapshot || {}
         if (!config.batna_value) {
-            // Fallback defaults for test harness usage without saved config
             config = {
                 domain_label: session.domain || 'general',
-                batna_value: 0,
-                batna_description: 'No BATNA set',
+                batna_value: config.batna_value || 0,
+                batna_description: config.batna_description || 'No BATNA set',
                 opening_strategy: 'anchoring',
-                concession_budget: 20,
+                concession_budget: config.concession_budget || 20,
                 red_lines: {},
-                variables: {},
+                variables: config.variables || {},
                 weights: {},
+                ...config,
             }
         }
 
-        // ── 3. BATNA hard check ──────────────────────────────────────────────────
         const perspective = config.variables?.perspective || 'seller'
-        const batnaCheck = checkBATNA(
-            worldModel.current_offer,
-            config.batna_value,
-            config.batna_description,
-            perspective
-        )
 
-        if (batnaCheck.breached) {
-            return {
-                statusCode: 200,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    type: 'batna_breach',
-                    reason: batnaCheck.reason,
-                    natural_language_response: `I cannot proceed. Your offer is below our minimum acceptable threshold. ${batnaCheck.reason}`,
-                }),
-            }
-        }
-
-        // ── 4. Load technique library ────────────────────────────────────────────
+        // ── 3. Load technique library ────────────────────────────────────────────
         const { data: techniques, error: techError } = await supabase
             .from('technique_library')
             .select('*')
 
         if (techError) throw new Error(`Technique library fetch failed: ${techError.message}`)
 
-        // ── 5. Build system prompt ───────────────────────────────────────────────
+        // ── 4. Build system prompt ───────────────────────────────────────────────
         const systemPrompt = buildSystemPrompt({
             worldModel,
             config,
@@ -254,41 +268,40 @@ export const handler = async (event) => {
             mode,
         })
 
-        // ── 6. Build conversation history for Claude ─────────────────────────────
+        // ── 5. Build the single user message (FIX-4) ─────────────────────────────
+        // No prose assistant turns are replayed — that contradicted the JSON-only
+        // contract and caused turn-2+ responses to degrade to prose.
         const transcript = session.transcript || []
-        const messages = []
+        const recentDialogue = transcript
+            .slice(-DIALOGUE_TURNS_IN_MESSAGE * 2)
+            .map((t) =>
+                t.role === 'counterparty'
+                    ? `COUNTERPARTY: ${t.content}`
+                    : `US: ${t.content}`
+            )
+            .join('\n')
 
-        // Replay existing transcript as alternating user/assistant turns
-        for (const turn of transcript) {
-            if (turn.role === 'counterparty') {
-                messages.push({ role: 'user', content: turn.content })
-            } else if (turn.role === 'negotiator') {
-                messages.push({ role: 'assistant', content: turn.content })
-            }
-        }
+        const userMessage = `${recentDialogue ? `RECENT DIALOGUE:\n${recentDialogue}\n\n` : ''}LATEST COUNTERPARTY MESSAGE:\n"${counterparty_message}"\n\nAnalyze and respond now. Output the JSON object only.`
 
-        // Add current counterparty message
-        messages.push({ role: 'user', content: counterparty_message })
-
-        // ── 7. Call Claude API ───────────────────────────────────────────────────
+        // ── 6. Call Claude API (FIX-2: sonnet) ───────────────────────────────────
         const claudeResponse = await anthropic.messages.create({
-            model: 'claude-opus-4-7',
-            max_tokens: 4096,
+            model: MODEL,
+            max_tokens: MAX_TOKENS,
             system: systemPrompt,
-            messages,
+            messages: [{ role: 'user', content: userMessage }],
         })
 
-        const rawText = claudeResponse.content[0]?.text || ''
+        // FIX-3: find the text block by type — content[0] can be a thinking block.
+        const rawText =
+            claudeResponse.content.find((b) => b.type === 'text')?.text || ''
 
-        // ── 8. Parse and validate Claude JSON response ───────────────────────────
+        // ── 7. Parse and validate Claude JSON response ───────────────────────────
         let parsed
         try {
-            // Claude may wrap JSON in markdown code fences — strip them
             const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/)
             const jsonStr = jsonMatch ? jsonMatch[1].trim() : rawText.trim()
             parsed = JSON.parse(jsonStr)
         } catch {
-            // If parsing fails, return raw text in a safe wrapper
             parsed = {
                 internal_reasoning: 'JSON parse failed — raw response attached.',
                 technique_detected: 'unknown',
@@ -303,6 +316,22 @@ export const handler = async (event) => {
                 updated_counterparty_beliefs: worldModel.counterparty_beliefs,
                 bayesian_update_notes: '',
             }
+        }
+
+        // ── 8. BATNA gate AFTER generation (FIX-6) ───────────────────────────────
+        const proposedValue = parsed.updated_offer?.value
+        if (offerBreachesBATNA(proposedValue, config.batna_value, perspective)) {
+            // Do NOT persist the breaching offer or transcript. Surface the breach.
+            await setTurnStatus(turn_id, session_id, {
+                status: 'complete',
+                result: {
+                    type: 'batna_breach',
+                    reason: `BATNA HARD STOP: proposed offer of ${proposedValue} breaches the BATNA ${perspective === 'seller' ? 'floor' : 'ceiling'} of ${config.batna_value}${config.batna_description ? ` (${config.batna_description})` : ''}. Draft withheld.`,
+                    withheld_draft: parsed.natural_language_response,
+                    natural_language_response: `I cannot proceed with this concession — it breaches our minimum acceptable threshold of ${config.batna_value}.`,
+                },
+            })
+            return
         }
 
         // ── 9. Update world model ────────────────────────────────────────────────
@@ -320,24 +349,41 @@ export const handler = async (event) => {
         }
 
         const updatedTurnHistory = [...(worldModel.turn_history || []), newTurnEntry]
-        // Merge bluff tracker — accumulate across turns, overwrite existing claims by claim text
+
         const existingBluffs = worldModel.bluff_tracker || []
         const newBluffs = parsed.bluff_probability_updates || []
-        const bluffMap = new Map(existingBluffs.map(b => [b.claim, b]))
+        const bluffMap = new Map(existingBluffs.map((b) => [b.claim, b]))
         for (const b of newBluffs) bluffMap.set(b.claim, b)
         const updatedBluffTracker = Array.from(bluffMap.values())
 
-        // Compute new concession remaining — works for both seller and buyer perspectives
-        // Sellers concede by lowering their offer; buyers concede by raising theirs.
+        // FIX-5: concession in consistent units — percent of the OPENING offer.
+        const openingOfferValue =
+            (worldModel.turn_history || [])
+                .map((t) => t.our_offer?.value)
+                .find((v) => typeof v === 'number') ??
+            (typeof worldModel.current_offer?.value === 'number'
+                ? worldModel.current_offer.value
+                : null)
+
         const offerBefore = worldModel.current_offer?.value
         const offerAfter = parsed.updated_offer?.value
         let newConcessionRemaining = worldModel.concession_remaining
-        if (typeof offerBefore === 'number' && typeof offerAfter === 'number') {
-            const concessionMade = perspective === 'buyer'
-                ? offerAfter - offerBefore   // buyer concedes by going up
-                : offerBefore - offerAfter   // seller concedes by going down
+        if (
+            typeof offerBefore === 'number' &&
+            typeof offerAfter === 'number' &&
+            typeof openingOfferValue === 'number' &&
+            openingOfferValue !== 0
+        ) {
+            const concessionMade =
+                perspective === 'buyer'
+                    ? offerAfter - offerBefore // buyer concedes by going up
+                    : offerBefore - offerAfter // seller concedes by going down
             if (concessionMade > 0) {
-                newConcessionRemaining = Math.max(0, worldModel.concession_remaining - concessionMade)
+                const concessionPct = (concessionMade / Math.abs(openingOfferValue)) * 100
+                newConcessionRemaining = Math.max(
+                    0,
+                    worldModel.concession_remaining - concessionPct
+                )
             }
         }
 
@@ -346,7 +392,8 @@ export const handler = async (event) => {
             .update({
                 current_offer: parsed.updated_offer || worldModel.current_offer,
                 concession_remaining: newConcessionRemaining,
-                counterparty_beliefs: parsed.updated_counterparty_beliefs || worldModel.counterparty_beliefs,
+                counterparty_beliefs:
+                    parsed.updated_counterparty_beliefs || worldModel.counterparty_beliefs,
                 bluff_tracker: updatedBluffTracker,
                 turn_history: updatedTurnHistory,
                 updated_at: new Date().toISOString(),
@@ -354,13 +401,17 @@ export const handler = async (event) => {
             .eq('session_id', session_id)
 
         if (wmUpdateError) {
-            console.error('[negotiate] World model update failed:', wmUpdateError)
+            console.error('[negotiate-background] World model update failed:', wmUpdateError)
         }
 
         // ── 10. Update session transcript ────────────────────────────────────────
         const updatedTranscript = [
             ...transcript,
-            { role: 'counterparty', content: counterparty_message, timestamp: new Date().toISOString() },
+            {
+                role: 'counterparty',
+                content: counterparty_message,
+                timestamp: new Date().toISOString(),
+            },
             {
                 role: 'negotiator',
                 content: parsed.natural_language_response,
@@ -374,11 +425,10 @@ export const handler = async (event) => {
             .update({ transcript: updatedTranscript })
             .eq('id', session_id)
 
-        // ── 11. Return structured result ─────────────────────────────────────────
-        return {
-            statusCode: 200,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+        // ── 11. Write final result for the poller ────────────────────────────────
+        await setTurnStatus(turn_id, session_id, {
+            status: 'complete',
+            result: {
                 type: mode === 'coached' ? 'coached_draft' : 'autonomous_response',
                 internal_reasoning: parsed.internal_reasoning,
                 technique_detected: parsed.technique_detected,
@@ -393,13 +443,13 @@ export const handler = async (event) => {
                 bayesian_update_notes: parsed.bayesian_update_notes,
                 concession_remaining: newConcessionRemaining,
                 turn_number: newTurnEntry.turn,
-            }),
-        }
+            },
+        })
     } catch (err) {
-        console.error('[negotiate]', err)
-        return {
-            statusCode: 500,
-            body: JSON.stringify({ error: err.message }),
-        }
+        console.error('[negotiate-background]', err)
+        await setTurnStatus(turn_id, session_id, {
+            status: 'error',
+            error: err.message,
+        })
     }
 }
