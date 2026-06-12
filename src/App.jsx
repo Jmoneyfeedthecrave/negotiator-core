@@ -3,15 +3,17 @@ import './index.css'
 import TestHarness from './components/TestHarness.jsx'
 import EmailNegotiator from './components/EmailNegotiator.jsx'
 import KnowledgeLibrary from './components/KnowledgeLibrary.jsx'
+import MissionControl from './components/MissionControl'
 
 const TABS = [
+    { id: 'mission',   label: 'Mission Control',   icon: '🎯' },
     { id: 'email',     label: 'Email Negotiator', icon: '✉️' },
     { id: 'knowledge', label: 'Knowledge Library', icon: '🧠' },
-    { id: 'harness',   label: 'Test Harness',      icon: '⚡' },
+    { id: 'harness',   label: 'Sparring Arena',    icon: '⚡' },
 ]
 
 export default function App() {
-    const [activeTab, setActiveTab] = useState('email')
+    const [activeTab, setActiveTab] = useState('mission')
     const [hovered, setHovered] = useState(null)
 
     return (
@@ -100,6 +102,7 @@ export default function App() {
             </header>
 
             <main style={{ flex: 1, overflow: 'hidden' }}>
+                {activeTab === 'mission'   && <MissionControl onOpenThread={() => setActiveTab('email')} />}
                 {activeTab === 'email'     && <EmailNegotiator />}
                 {activeTab === 'knowledge' && <KnowledgeLibrary />}
                 {activeTab === 'harness'   && <TestHarness />}
