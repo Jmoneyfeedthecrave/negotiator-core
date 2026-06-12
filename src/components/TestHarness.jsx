@@ -43,7 +43,13 @@ export default function TestHarness() {
         setLoading(true)
         try {
             addLog('info', `Initializing session — domain: "${domain}", BATNA: ${batnaValue}`)
-            const result = await initSession({ domain, configId: null })
+            const result = await initSession({
+                domain,
+                configId: null,
+                batnaValue: batnaValue,
+                batnaDescription: batnaDesc,
+                maxTurns: 10
+            })
             setSessionId(result.session_id)
             addLog('success', `Session created. session_id: ${result.session_id}`)
         } catch (err) { addLog('error', err.message) }
@@ -57,7 +63,12 @@ export default function TestHarness() {
         setPendingResponse(null)
         addLog('info', `[COUNTERPARTY → US] "${message}"`)
         try {
-            const result = await runNegotiationTurn({ sessionId, counterpartyMessage: message, mode })
+            const result = await runNegotiationTurn({
+                sessionId,
+                counterpartyMessage: message,
+                mode,
+                onStatus: (msg) => addLog('info', msg)
+            })
             if (result.type === 'batna_breach') { addLog('batna', result.reason); return }
             addLog('turn', { turn: result.turn_number, mode: result.type, technique_detected: result.technique_detected, technique_applied: result.technique_applied, move: result.move, confidence: result.confidence_score, concession_remaining: result.concession_remaining })
             addLog('info', `[INTERNAL REASONING]\n${result.internal_reasoning}`)

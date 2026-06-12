@@ -1,8 +1,13 @@
 /**
- * Netlify Function: init-session
+ * Netlify Function: init-session — PATCHED
  * POST /api/init-session
- * Body: { domain, config_id?, perspective? }
- * Creates a session + world_model row, returns session_id.
+ * Body: { domain, config_id?, perspective?, batna_value?, batna_description?, max_turns? }
+ *
+ * Change vs. original: the UI's BATNA value, BATNA description, and max turns
+ * were collected in the console but never transmitted, so every test-harness
+ * session ran with batna_value 0 and the BATNA hard-stop logic was inert.
+ * Direct values now merge into config_snapshot (a saved config_id still wins
+ * for any field it defines).
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -24,8 +29,14 @@ export const handler = async (event) => {
         return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON body' }) }
     }
 
-    // DFB-1: accept explicit perspective so buyers are tracked correctly
-    const { domain, config_id, perspective = 'seller' } = body
+    const {
+        domain,
+        config_id,
+        perspective = 'seller',
+        batna_value,
+        batna_description,
+        max_turns,
+    } = body
 
     if (!domain) {
         return { statusCode: 400, body: JSON.stringify({ error: 'domain is required' }) }
@@ -42,7 +53,6 @@ export const handler = async (event) => {
             if (configError) throw new Error(`Config fetch failed: ${configError.message}`)
             if (!config) throw new Error(`Config not found: ${config_id}`)
 
-            // Reject post-game persona strategy rows accidentally used as live configs
             if (config.config_key?.startsWith('counter_strategy_')) {
                 throw new Error(`Config ${config_id} is a persona strategy record, not a live config.`)
             }
@@ -52,8 +62,26 @@ export const handler = async (event) => {
             concessionBudget = config.concession_budget || 20
         }
 
-        // Embed perspective into the config snapshot so negotiate.js always has it
-        configSnapshot = { ...configSnapshot, variables: { ...(configSnapshot.variables || {}), perspective } }
+        // NEW: direct BATNA / limits from the request fill any gaps the saved
+        // config didn't define (test-harness sessions have no config_id at all).
+        if (typeof batna_value === 'number' && !configSnapshot.batna_value) {
+            configSnapshot.batna_value = batna_value
+            batnaValue = batna_value
+        }
+        if (batna_description && !configSnapshot.batna_description) {
+            configSnapshot.batna_description = batna_description
+        }
+        if (typeof max_turns === 'number' && !configSnapshot.max_turns) {
+            configSnapshot.max_turns = max_turns
+        }
+        if (!configSnapshot.domain_label) configSnapshot.domain_label = domain
+        if (!configSnapshot.concession_budget) configSnapshot.concession_budget = concessionBudget
+
+        // Embed perspective into the config snapshot so negotiate always has it
+        configSnapshot = {
+            ...configSnapshot,
+            variables: { ...(configSnapshot.variables || {}), perspective },
+        }
 
         const { data: session, error: sessionError } = await supabase
             .from('sessions')
@@ -65,8 +93,8 @@ export const handler = async (event) => {
             .from('world_model')
             .insert({
                 session_id: session.id,
-                current_offer: {},            // will be set on first negotiate turn
-                concession_remaining: concessionBudget,
+                current_offer: {},
+                concession_remaining: configSnapshot.concession_budget,
                 counterparty_beliefs: {},
                 bluff_tracker: [],
                 turn_history: [],
@@ -80,7 +108,7 @@ export const handler = async (event) => {
                 session_id: session.id,
                 world_model_id: worldModel.id,
                 domain,
-                batna_value: batnaValue,
+                batna_value: configSnapshot.batna_value || 0,
                 perspective,
             }),
         }
