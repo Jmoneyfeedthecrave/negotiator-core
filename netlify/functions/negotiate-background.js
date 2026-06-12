@@ -41,7 +41,7 @@ const supabase = createClient(
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
 
 const MODEL = 'claude-sonnet-4-6'
-const MAX_TOKENS = 2500
+const MAX_TOKENS = 4000
 const HISTORY_TURNS_IN_PROMPT = 10   // cap world-model history in the system prompt
 const DIALOGUE_TURNS_IN_MESSAGE = 6  // cap recent dialogue lines in the user message
 
@@ -137,7 +137,7 @@ CURRENT NEGOTIATION STATE:
 
     const outputFormatBlock = `
 OUTPUT FORMAT — CRITICAL:
-Respond with ONLY valid JSON, no prose before or after, no markdown fences:
+Respond with ONLY valid JSON. No prose before or after. NO markdown code fences (no \`\`\`). Start your response with the { character. Keep internal_reasoning under 200 words and each reasoning field under 60 words so the full JSON always completes:
 
 {
   "internal_reasoning": "Step-by-step strategic thinking including Nash Equilibrium analysis, EV calculation, and range analysis.",
@@ -296,11 +296,23 @@ export const handler = async (event) => {
             claudeResponse.content.find((b) => b.type === 'text')?.text || ''
 
         // ── 7. Parse and validate Claude JSON response ───────────────────────────
+        // Tolerant extraction: handles markdown fences (with or without a closing
+        // fence, e.g. when output was truncated) and stray prose around the JSON.
+        function extractJson(text) {
+            let s = (text || '').trim()
+            const fenceOpen = s.match(/^```(?:json)?\s*/i)
+            if (fenceOpen) s = s.slice(fenceOpen[0].length)
+            const fenceClose = s.lastIndexOf('```')
+            if (fenceClose !== -1) s = s.slice(0, fenceClose)
+            const first = s.indexOf('{')
+            const last = s.lastIndexOf('}')
+            if (first !== -1 && last > first) s = s.slice(first, last + 1)
+            return JSON.parse(s)
+        }
+
         let parsed
         try {
-            const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/)
-            const jsonStr = jsonMatch ? jsonMatch[1].trim() : rawText.trim()
-            parsed = JSON.parse(jsonStr)
+            parsed = extractJson(rawText)
         } catch {
             parsed = {
                 internal_reasoning: 'JSON parse failed — raw response attached.',
