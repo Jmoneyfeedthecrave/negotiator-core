@@ -85,7 +85,7 @@ export const handler = async (event) => {
         }).eq('id', email_id)
 
         await supabase.from('email_threads')
-            .update({ updated_at: new Date().toISOString() })
+            .update({ updated_at: new Date().toISOString(), needs_attention: false, attention_reason: null })
             .eq('id', email.thread_id)
 
         return {

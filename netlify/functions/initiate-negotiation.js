@@ -138,20 +138,20 @@ export const handler = async (event) => {
         // 3. Call Claude to draft the opening email
         const prompt = buildOpeningEmailPrompt(our_position, counterparty_name, counterparty_email, threadDomain, learnedPatterns)
         const claudeRes = await anthropic.messages.create({
-            model:      'claude-opus-4-7',
+            model:      'claude-sonnet-4-6',
             max_tokens: 2000,
             messages:   [{ role: 'user', content: prompt }],
         })
 
         let draft = {}
         try {
-            const raw = claudeRes.content[0]?.text || ''
+            const raw = claudeRes.content.find(b => b.type === 'text')?.text || ''
             const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
             draft = JSON.parse(match ? match[1].trim() : raw.trim())
         } catch {
             draft = {
                 subject_line:   our_position.subject,
-                opening_email:  claudeRes.content[0]?.text || '',
+                opening_email:  claudeRes.content.find(b => b.type === 'text')?.text || '',
                 opening_strategy: 'Standard professional opening',
             }
         }
