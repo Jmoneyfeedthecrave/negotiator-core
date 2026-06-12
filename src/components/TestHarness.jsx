@@ -97,7 +97,7 @@ export default function TestHarness() {
     }
 
     const s = {
-        container: { padding: '16px', maxWidth: '900px', margin: '0 auto' },
+        container: { padding: '16px', maxWidth: '900px', margin: '0 auto', height: '100%', overflowY: 'auto', overscrollBehavior: 'contain' },
         h1: { fontSize: '18px', marginBottom: '16px', color: '#94a3b8' },
         section: { marginBottom: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' },
         label: { color: '#94a3b8', minWidth: '130px' },

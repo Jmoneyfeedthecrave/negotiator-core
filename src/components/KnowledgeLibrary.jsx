@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../api/supabaseClient'
+import Linkify from '../lib/Linkify'
 
 export default function KnowledgeLibrary() {
     const [sources, setSources] = useState([])
@@ -62,7 +63,7 @@ export default function KnowledgeLibrary() {
     const patternSourceColors = { own_negotiation: '#10b981', historical: '#f59e0b', research: '#3b82f6' }
 
     return (
-        <div style={{ minHeight: '100vh', background: '#0a0f1e', color: '#e2e8f0', fontFamily: 'Inter, sans-serif', padding: '24px' }}>
+        <div style={{ height: '100%', overflowY: 'auto', overscrollBehavior: 'contain', background: '#0a0f1e', color: '#e2e8f0', fontFamily: 'Inter, sans-serif', padding: '24px' }}>
             <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
 
                 {/* Header */}
@@ -131,7 +132,7 @@ export default function KnowledgeLibrary() {
                                         )}
                                     </div>
                                 </div>
-                                <div style={{ color: '#475569', fontSize: '11px', marginTop: '8px' }}>{s.content_text.slice(0, 120)}…</div>
+                                <div style={{ color: '#475569', fontSize: '11px', marginTop: '8px' }}><Linkify text={s.content_text.slice(0, 120) + '…'} /></div>
                             </div>
                         ))}
                     </div>
@@ -151,8 +152,8 @@ export default function KnowledgeLibrary() {
                                     <span style={{ fontSize: '10px', color: '#475569' }}>confidence: {Math.round((p.confidence_score || 0.7) * 100)}%</span>
                                 </div>
                                 <div style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: 600, marginBottom: '4px' }}>{p.situation_type}</div>
-                                <div style={{ fontSize: '12px', color: '#94a3b8' }}>{p.lesson}</div>
-                                {p.tactic_used && <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>Tactic: {p.tactic_used}</div>}
+                                <div style={{ fontSize: '12px', color: '#94a3b8' }}><Linkify text={p.lesson} /></div>
+                                {p.tactic_used && <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>Tactic: <Linkify text={p.tactic_used} /></div>}
                             </div>
                         ))}
                     </div>
